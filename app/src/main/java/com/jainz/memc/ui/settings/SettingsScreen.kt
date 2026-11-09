@@ -133,7 +133,8 @@ fun SettingsScreen(nav: NavController) {
                                 if (language != code) {
                                     st.language.set(code)
                                     scope.launch {
-                                        g.db.videos().resetScrape()
+                                        g.db.meta().markMoviesStale()
+                                        g.db.meta().markShowsStale()
                                         g.db.meta().clearEpisodes()
                                         ScanWorker.enqueue(context, scrapeOnly = true)
                                     }
@@ -159,13 +160,15 @@ fun SettingsScreen(nav: NavController) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { ScanWorker.enqueue(context) }) { Text("Rescan now") }
                     OutlinedButton(onClick = {
+                        // Keeps every match (including ones fixed by hand) and re-downloads details.
                         scope.launch {
-                            g.db.videos().resetScrape()
-                            g.db.meta().clearMovies(); g.db.meta().clearShows()
-                            g.db.meta().clearSeasons(); g.db.meta().clearEpisodes()
+                            g.db.meta().markMoviesStale()
+                            g.db.meta().markShowsStale()
+                            g.db.meta().clearEpisodes()
+                            g.db.videos().retryNotFound()
                             ScanWorker.enqueue(context, scrapeOnly = true)
                         }
-                    }) { Text("Re-download all artwork") }
+                    }) { Text("Refresh all details") }
                 }
             }
         }

@@ -228,7 +228,10 @@ fun MovieDetailScreen(nav: NavController, tmdbId: Long) {
             startWithTv = false,
             onDismiss = { fixing = false },
             onPick = { r ->
-                runCatching { Scraper(g).assignMovie(primary.id, r.id) }
+                runCatching {
+                    val scraper = Scraper(g)
+                    files.forEach { f -> scraper.assignMovie(f.video.id, r.id) }
+                }
                 if (r.id != tmdbId) {
                     nav.popBackStack()
                     nav.navigate(Routes.movie(r.id))

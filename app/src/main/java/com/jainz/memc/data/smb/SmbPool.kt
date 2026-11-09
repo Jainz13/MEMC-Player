@@ -82,12 +82,19 @@ class SmbPool(private val db: AppDatabase) {
         val segments = uri.pathSegments
         if (segments.isEmpty()) throw IOException("SMB address has no share: $uri")
         val info = uri.userInfo ?: ""
+        val sourceId = info.removePrefix("src").toLongOrNull()?.takeIf { info.startsWith("src") }
+        if (sourceId != null) {
+            // Library files: always use the share's current server address and login, so
+            // editing the share (e.g. the NAS got a new IP) keeps every video playable.
+            val src = db.sources().getBlocking(sourceId)
+                ?: throw IOException("The network share for this video was removed")
+            return SmbLocation(
+                host = src.host, port = src.port, share = src.share,
+                path = segments.drop(1).joinToString("/"),
+                auth = authFor(src),
+            )
+        }
         val auth = when {
-            info.startsWith("src") && info.drop(3).toLongOrNull() != null -> {
-                val src = db.sources().getBlocking(info.drop(3).toLong())
-                    ?: throw IOException("The network share for this video was removed")
-                authFor(src)
-            }
             info.contains(':') -> SmbAuth(info.substringBefore(':'), info.substringAfter(':'), "")
             info.isNotEmpty() -> SmbAuth(info, "", "")
             else -> SmbAuth("", "", "")

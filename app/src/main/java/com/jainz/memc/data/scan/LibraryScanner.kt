@@ -77,12 +77,21 @@ class LibraryScanner(private val context: Context, private val g: AppGraph) {
     /** Walks an SMB share (or its configured sub-folder) for video files. */
     suspend fun scanSource(src: SourceEntity): Int = withContext(Dispatchers.IO) {
         val found = ArrayList<FoundFile>()
+        val failedDirs = ArrayList<String>()
         val stack = ArrayDeque<Pair<String, Int>>()
         stack.addLast(src.path.trim('/') to 0)
         while (stack.isNotEmpty()) {
             ensureActive()
             val (dir, depth) = stack.removeLast()
-            val entries = g.smb.list(g.smb.location(src, dir))
+            val entries = try {
+                g.smb.list(g.smb.location(src, dir))
+            } catch (e: Exception) {
+                // The share root failing means the server is unreachable: abort and keep the library as is.
+                // A single unreadable sub-folder is skipped, and its existing entries are kept.
+                if (depth == 0) throw e
+                failedDirs += "/$dir"
+                continue
+            }
             for (e in entries) {
                 if (e.isDir) {
                     if (depth < 12 && !skipDir(e.name)) stack.addLast(e.path to depth + 1)
@@ -98,7 +107,7 @@ class LibraryScanner(private val context: Context, private val g: AppGraph) {
                 }
             }
         }
-        merge(src.id, found)
+        merge(src.id, found, keepUnder = failedDirs)
         found.size
     }
 
@@ -108,23 +117,35 @@ class LibraryScanner(private val context: Context, private val g: AppGraph) {
             n == "system volume information" || n == "lost+found" || n == "recycle bin" || n == "thumbs"
     }
 
-    private suspend fun merge(sourceId: Long, found: List<FoundFile>) {
+    /** Removes the phone's videos from the library (when "Include videos on this phone" is off). */
+    suspend fun clearDevice() {
+        g.db.videos().deleteSource(DEVICE_SOURCE)
+        g.db.meta().pruneMovies()
+        g.db.meta().pruneShows()
+    }
+
+    private suspend fun merge(sourceId: Long, found: List<FoundFile>, keepUnder: List<String> = emptyList()) {
         val videos = g.db.videos()
-        val existing = videos.bySource(sourceId).associateBy { it.uri }
+        // Match files by their path, not the full link: a share's server address can change
+        // and the file (with its watch progress and match) must stay the same entry.
+        val existing = videos.bySource(sourceId).associateBy { identity(it.uri) }
         val now = System.currentTimeMillis()
         val inserts = ArrayList<VideoEntity>()
         val updates = ArrayList<VideoEntity>()
 
         for (f in found) {
-            val old = existing[f.uri]
+            val old = existing[identity(f.uri)]
             if (old == null) {
                 inserts += newVideo(sourceId, f, now)
-            } else if (old.size != f.size || old.fileName != f.fileName) {
-                updates += old.copy(size = f.size, modified = f.modified, fileName = f.fileName)
+            } else if (old.size != f.size || old.fileName != f.fileName || old.uri != f.uri) {
+                updates += old.copy(uri = f.uri, size = f.size, modified = f.modified, fileName = f.fileName)
             }
         }
-        val foundUris = found.mapTo(HashSet()) { it.uri }
-        val removed = existing.values.filter { it.uri !in foundUris }.map { it.id }
+        val foundKeys = found.mapTo(HashSet()) { identity(it.uri) }
+        val removed = existing.values
+            .filter { identity(it.uri) !in foundKeys }
+            .filter { v -> keepUnder.none { dir -> v.folder == dir || v.folder.startsWith("$dir/") } }
+            .map { it.id }
 
         if (inserts.isNotEmpty()) videos.insertAll(inserts)
         if (updates.isNotEmpty()) videos.updateAll(updates)
@@ -167,6 +188,10 @@ class LibraryScanner(private val context: Context, private val g: AppGraph) {
         )
 
         fun isSmb(uri: String) = uri.startsWith("smb://")
+
+        /** smb://srcN@host/share/path -> "/share/path" (lower-case, SMB is case-insensitive). */
+        fun identity(uri: String): String =
+            if (isSmb(uri)) (android.net.Uri.parse(uri).path ?: uri).lowercase() else uri
 
         fun devicePermissions(): Array<String> = when {
             Build.VERSION.SDK_INT >= 34 -> arrayOf(

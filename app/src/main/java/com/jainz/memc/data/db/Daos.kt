@@ -103,7 +103,7 @@ interface VideoDao {
     @Query("UPDATE videos SET watched = :watched, positionMs = 0 WHERE id = :id")
     suspend fun setWatched(id: Long, watched: Boolean)
 
-    @Query("UPDATE videos SET watched = :watched, positionMs = 0 WHERE showId = :showId AND season = :season")
+    @Query("UPDATE videos SET watched = :watched, positionMs = 0 WHERE showId = :showId AND COALESCE(season, 0) = :season")
     suspend fun setSeasonWatched(showId: Long, season: Int, watched: Boolean)
 
     @Query("UPDATE videos SET tech = :tech WHERE id = :id")
@@ -129,13 +129,13 @@ interface VideoDao {
     @Query(CARD_SELECT + " WHERE v.movieId = :movieId ORDER BY v.size DESC")
     fun forMovie(movieId: Long): Flow<List<VideoCard>>
 
-    @Query(CARD_SELECT + " WHERE v.showId = :showId AND v.season = :season ORDER BY v.episode")
+    @Query(CARD_SELECT + " WHERE v.showId = :showId AND COALESCE(v.season, 0) = :season ORDER BY v.episode, v.fileName")
     fun episodes(showId: Long, season: Int): Flow<List<VideoCard>>
 
     @Query(CARD_SELECT + " WHERE v.showId = :showId ORDER BY v.season, v.episode")
     suspend fun allEpisodes(showId: Long): List<VideoCard>
 
-    @Query("SELECT DISTINCT season FROM videos WHERE showId = :showId AND season IS NOT NULL ORDER BY season")
+    @Query("SELECT DISTINCT COALESCE(season, 0) AS season FROM videos WHERE showId = :showId ORDER BY season")
     fun seasons(showId: Long): Flow<List<Int>>
 
     @Query(CARD_SELECT + " WHERE v.id = :id")
@@ -188,6 +188,20 @@ interface MetaDao {
 
     @Query("DELETE FROM shows WHERE tmdbId NOT IN (SELECT showId FROM videos WHERE showId IS NOT NULL)")
     suspend fun pruneShows()
+
+    /** Marks every movie/show as out of date so the next scrape re-downloads its details. */
+    @Query("UPDATE movies SET fetchedAt = 0") suspend fun markMoviesStale()
+    @Query("UPDATE shows SET fetchedAt = 0") suspend fun markShowsStale()
+    @Query("SELECT tmdbId FROM movies WHERE fetchedAt = 0") suspend fun staleMovieIds(): List<Long>
+    @Query("SELECT tmdbId FROM shows WHERE fetchedAt = 0") suspend fun staleShowIds(): List<Long>
+
+    /** Seasons that have episodes in the library but no episode details yet. */
+    @Query(
+        """SELECT DISTINCT v.showId AS showId, v.season AS season FROM videos v
+        WHERE v.showId IS NOT NULL AND v.season IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.showId = v.showId AND e.season = v.season)"""
+    )
+    suspend fun seasonsMissingEpisodes(): List<ShowSeason>
 
     @Query("DELETE FROM movies") suspend fun clearMovies()
     @Query("DELETE FROM shows") suspend fun clearShows()

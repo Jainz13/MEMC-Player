@@ -60,6 +60,25 @@ class Scraper(private val g: AppGraph) {
             }
         }
         progress(pending.size, pending.size)
+        refreshStale()
+    }
+
+    /** Re-downloads details marked out of date (language change, "Refresh all details") and missing seasons. */
+    private suspend fun refreshStale() {
+        var failures = 0
+        suspend fun attempt(block: suspend () -> Unit) {
+            try {
+                block()
+                failures = 0
+            } catch (e: TmdbAuthException) {
+                throw e
+            } catch (e: IOException) {
+                if (++failures >= 5) throw e
+            }
+        }
+        meta.staleMovieIds().forEach { id -> attempt { ensureMovie(id) } }
+        meta.staleShowIds().forEach { id -> attempt { ensureShow(id) } }
+        meta.seasonsMissingEpisodes().forEach { s -> attempt { ensureSeason(s.showId, s.season) } }
     }
 
     // ---- Matching -------------------------------------------------------------

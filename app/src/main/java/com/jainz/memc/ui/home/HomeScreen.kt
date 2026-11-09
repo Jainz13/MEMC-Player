@@ -116,7 +116,7 @@ fun HomeScreen(nav: NavController) {
                 }
             }
         }
-        if (tmdbKey.isBlank() && count != 0) {
+        if (tmdbKey.isBlank() && count > 0) {
             item { TmdbPrompt { nav.navigate(Routes.SETTINGS) } }
         }
 

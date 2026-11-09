@@ -16,6 +16,7 @@ import androidx.compose.runtime.setValue
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -80,6 +81,23 @@ class PlayerActivity : ComponentActivity() {
 
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                 recordTech()
+            }
+
+            // The video format is often still unknown when tracks change; the first frame is certain.
+            override fun onRenderedFirstFrame() {
+                recordTech()
+            }
+
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo,
+                newPosition: Player.PositionInfo,
+                reason: Int,
+            ) {
+                // "Next episode" or a playlist jump: remember where the previous episode was left.
+                if (reason == Player.DISCONTINUITY_REASON_SEEK && oldPosition.mediaItemIndex != newPosition.mediaItemIndex) {
+                    val id = playlistIds.getOrNull(oldPosition.mediaItemIndex) ?: return
+                    saveProgressFor(id, oldPosition.positionMs)
+                }
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -242,6 +260,18 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    /** Saves a position for an item that is no longer current, using the duration stored for it. */
+    private fun saveProgressFor(id: Long, pos: Long) {
+        g.scope.launch {
+            val v = g.db.videos().get(id) ?: return@launch
+            val dur = v.durationMs
+            if (dur <= 0) return@launch
+            // Skipping on during the credits counts as watched.
+            val watched = pos >= dur * 0.90
+            g.db.videos().savePlayback(id, if (watched) 0 else pos, dur, System.currentTimeMillis(), watched)
+        }
+    }
+
     private fun recordTech() {
         val id = currentId() ?: return
         val video = player.videoFormat ?: return
@@ -301,6 +331,11 @@ class PlayerActivity : ComponentActivity() {
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         inPip = isInPictureInPictureMode
+        // Closing the PiP window stops the activity; without this the audio kept playing in the background.
+        if (!isInPictureInPictureMode && !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            saveProgress()
+            player.pause()
+        }
     }
 
     override fun onStop() {

@@ -163,6 +163,8 @@ data class VideoCard(
     @ColumnInfo(name = "airDate") val airDate: String?,
 )
 
+data class ShowSeason(val showId: Long, val season: Int)
+
 data class FolderItem(
     val sourceId: Long,
     val folder: String,

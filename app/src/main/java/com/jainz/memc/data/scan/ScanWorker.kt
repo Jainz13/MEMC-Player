@@ -27,6 +27,8 @@ class ScanWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             if (g.settings.indexDevice.value) {
                 setProgress(workDataOf(KEY_STAGE to "Scanning this phone"))
                 runCatching { scanner.scanDevice() }
+            } else {
+                scanner.clearDevice()
             }
             for (src in g.db.sources().all().filter { it.indexed }) {
                 setProgress(workDataOf(KEY_STAGE to "Scanning ${src.name}"))
@@ -70,9 +72,11 @@ class ScanWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             val req = OneTimeWorkRequestBuilder<ScanWorker>()
                 .setInputData(workDataOf(KEY_SCRAPE_ONLY to scrapeOnly))
                 .build()
+            // A full scan already running also fetches artwork at its end, so a scrape-only
+            // request must not cancel it.
             WorkManager.getInstance(context).enqueueUniqueWork(
                 NAME,
-                if (onlyIfStale) ExistingWorkPolicy.KEEP else ExistingWorkPolicy.REPLACE,
+                if (onlyIfStale || scrapeOnly) ExistingWorkPolicy.KEEP else ExistingWorkPolicy.REPLACE,
                 req,
             )
         }

@@ -36,6 +36,7 @@ class SmbDataSource(private val pool: SmbPool) : BaseDataSource(/* isNetwork = *
     private var bytesRemaining = 0L
     private var opened = false
     private val chunks = LinkedHashMap<Long, Future<ByteArray>>()
+    @Volatile private var maxRead = CHUNK
 
     override fun open(dataSpec: DataSpec): Long {
         uri = dataSpec.uri
@@ -43,9 +44,18 @@ class SmbDataSource(private val pool: SmbPool) : BaseDataSource(/* isNetwork = *
         val f = try {
             pool.openFile(pool.resolve(dataSpec.uri))
         } catch (e: IOException) {
-            throw DataSourceException(e, PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED)
+            val notFound = e.message?.contains("not found", ignoreCase = true) == true
+            throw DataSourceException(
+                e,
+                if (notFound) PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
+                else PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            )
         }
         file = f
+        // Old servers (SMB 2.0.2) only allow 64 KB per read; never ask for more than negotiated.
+        maxRead = runCatching {
+            f.diskShare.treeConnect.session.connection.negotiatedProtocol.maxReadSize
+        }.getOrDefault(64 * 1024).coerceIn(64 * 1024, CHUNK)
         try {
             fileSize = f.fileInformation.standardInformation.endOfFile
         } catch (e: Exception) {
@@ -120,8 +130,9 @@ class SmbDataSource(private val pool: SmbPool) : BaseDataSource(/* isNetwork = *
         val len = min(CHUNK.toLong(), fileSize - start).toInt()
         val buf = ByteArray(len)
         var got = 0
+        val step = maxRead
         while (got < len) {
-            val n = f.read(buf, start + got, got, len - got)
+            val n = f.read(buf, start + got, got, min(len - got, step))
             if (n <= 0) break
             got += n
         }
