@@ -324,7 +324,9 @@ class ExportService : Service() {
             Build.VERSION.SDK_INT >= 35 -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
             else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
         }
-        ServiceCompat.startForeground(this, NOTIFICATION_ID, n, type)
+        // Not ServiceCompat: it filters the type through Android 14's list, which has no
+        // "mediaProcessing" (added in Android 15), and Android then rejects "type none".
+        startForeground(NOTIFICATION_ID, n, type)
     }
 
     private fun notifyDone(title: String, ok: Boolean) {

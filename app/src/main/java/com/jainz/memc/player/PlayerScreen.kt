@@ -821,8 +821,27 @@ private fun VideoTab(
             valueRange = 0f..1f,
             colors = SliderDefaults.colors(thumbColor = Palette.Accent, activeTrackColor = Palette.Accent),
         )
+        var pictureStatus by remember { mutableStateOf("") }
+        LaunchedEffect(Unit) {
+            while (true) {
+                val hdrVideo = PlayerState.hdrLabel(state.videoFormat)?.let { it != "Auto HDR" } == true
+                pictureStatus = when {
+                    !memcAvailable -> "Not available for this video"
+                    picture.fakedHdr -> "Screen in HDR mode · SDR white at ${picture.sdrWhiteNits.roundToInt()} nits, highlights up to ${picture.sdrPeakNits.roundToInt()}"
+                    hdrVideo && picture.boost > 0f -> "HDR video · brightness ×${String.format(java.util.Locale.US, "%.1f", 1f + 0.8f * picture.boost)} (soft roll-off at the top)"
+                    picture.boost > 0f -> "Applies when you let go of the slider (the video restarts once to switch the screen to HDR)"
+                    else -> "Off"
+                }
+                delay(500)
+            }
+        }
         Text(
-            "Brightens the picture by raising light levels while keeping each colour's hue and saturation, so it doesn't wash out.",
+            pictureStatus,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (picture.fakedHdr || picture.boost > 0f) Palette.Accent else Palette.TextDim,
+        )
+        Text(
+            "Raises light levels while keeping each colour's hue and saturation, so it doesn't wash out. On SDR videos it switches the screen to HDR mode, the only way the panel can go brighter than normal white.",
             style = MaterialTheme.typography.bodySmall,
             color = Palette.TextFaint,
         )

@@ -70,7 +70,7 @@ object StreamColorInfo {
      * SDR picture into HDR. Real HDR videos are left alone.
      */
     fun autoHdr(format: Format, picture: PictureControl?): Format {
-        if (picture == null || !picture.autoHdr) return format
+        if (picture == null || !picture.convertSdr) return format
         val transfer = format.colorInfo?.colorTransfer ?: Format.NO_VALUE
         if (transfer == C.COLOR_TRANSFER_ST2084 || transfer == C.COLOR_TRANSFER_HLG) {
             picture.fakedHdr = false

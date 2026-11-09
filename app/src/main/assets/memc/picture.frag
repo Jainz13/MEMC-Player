@@ -64,7 +64,7 @@ void main() {
         float ys = dot(lin, K709);
         // 4. Inverse tone map on luminance: SDR white -> uSdrWhiteNits, the top of the range
         //    expands smoothly towards uPeakNits (highlights get real HDR punch).
-        float white = uSdrWhiteNits * (1.0 + 0.6 * uBoost);
+        float white = uSdrWhiteNits;
         float highlight = smoothstep(0.55, 1.0, ys);
         float nits = white * ys + (uPeakNits - white) * highlight * highlight * ys;
         vec3 outNits = P709_TO_2020 * scaleTo(lin, ys, nits);

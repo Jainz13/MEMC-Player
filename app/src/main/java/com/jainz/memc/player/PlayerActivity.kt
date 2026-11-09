@@ -79,7 +79,8 @@ class PlayerActivity : ComponentActivity() {
         // A previous attempt showed this video can't go through the effect pipeline: play it plain.
         val memcAllowed = !intent.getBooleanExtra(EXTRA_NO_MEMC, false)
         picture = PictureControl(
-            boost = g.settings.hdrBoost.value / 100f,
+            // Without the effect pipeline nothing may be flagged as HDR, or SDR colours would be wrong.
+            boost = if (memcAllowed) g.settings.hdrBoost.value / 100f else 0f,
             autoHdr = g.settings.autoHdr.value && memcAllowed,
         )
         player = PlayerFactory.create(this, g.smb, g.settings, picture)
@@ -373,16 +374,22 @@ class PlayerActivity : ComponentActivity() {
 
     private fun updatePicture(boost: Float, autoHdr: Boolean) {
         g.settings.hdrBoost.set((boost * 100).toInt())
+        g.settings.autoHdr.set(autoHdr)
         picture.boost = boost
-        if (autoHdr != picture.autoHdr) {
-            // The video must be re-read to be flagged as HDR (or not): restart at the same spot.
-            g.settings.autoHdr.set(autoHdr)
+        picture.autoHdr = autoHdr
+        val transfer = player.videoFormat?.colorInfo?.colorTransfer
+        val videoIsSdr = picture.fakedHdr ||
+            (transfer != C.COLOR_TRANSFER_ST2084 && transfer != C.COLOR_TRANSFER_HLG)
+        val wantConvert = autoHdr || boost > 0f
+        if (videoIsSdr && wantConvert != picture.convertSdr) {
+            // SDR video: switching the screen into (or out of) HDR mode means re-reading the
+            // video with different colour flags - restart at the same spot.
             saveProgress()
             intent.putExtra(EXTRA_START_MS, player.currentPosition)
             recreate()
             return
         }
-        if (boost > 0f) installMemc()
+        if (boost > 0f || autoHdr) installMemc()
     }
 
     private fun updateMemc(enabled: Boolean, fps: Int, quality: Int) {
