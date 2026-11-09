@@ -6,6 +6,7 @@ import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
 import coil3.request.crossfade
+import com.jainz.memc.core.CrashLog
 import com.jainz.memc.core.Settings
 import com.jainz.memc.data.db.AppDatabase
 import com.jainz.memc.data.scan.ScanWorker
@@ -32,6 +33,7 @@ class MemcApp : Application(), SingletonImageLoader.Factory {
 
     override fun onCreate() {
         super.onCreate()
+        CrashLog.install(this)
         instance = this
         graph = AppGraph(this)
         if (graph.settings.scanOnStart.value) {

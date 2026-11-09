@@ -41,7 +41,13 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Intent
+import android.widget.Toast
+import androidx.compose.ui.text.font.FontFamily
 import com.jainz.memc.BuildConfig
+import com.jainz.memc.core.CrashLog
 import com.jainz.memc.MemcApp
 import com.jainz.memc.data.scan.ScanWorker
 import com.jainz.memc.data.tmdb.Tmdb
@@ -81,14 +87,50 @@ fun SettingsScreen(nav: NavController) {
     val subLang by st.subtitleLanguage.flow.collectAsStateWithLifecycle()
     val memcFps by st.memcTargetFps.flow.collectAsStateWithLifecycle()
     val memcOn by st.memcEnabled.flow.collectAsStateWithLifecycle()
+    val hdrBoost by st.hdrBoost.flow.collectAsStateWithLifecycle()
+    val autoHdr by st.autoHdr.flow.collectAsStateWithLifecycle()
     val memcQuality by st.memcQuality.flow.collectAsStateWithLifecycle()
     val caps = remember { DeviceCaps.read(context) }
+    var crash by remember { mutableStateOf(CrashLog.read(context)) }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
         item {
             Row(Modifier.statusBarsPadding().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                 Text("Settings", style = MaterialTheme.typography.headlineSmall)
+            }
+        }
+
+        if (crash != null) {
+            item { SectionTitle("Last crash report") }
+            item {
+                Card {
+                    Text(
+                        "The app closed unexpectedly. Copy or share this report so it can be fixed.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Palette.TextDim,
+                    )
+                    Text(
+                        crash!!.lines().take(25).joinToString("\n"),
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = Palette.Text,
+                        maxLines = 25,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = {
+                            val cm = context.getSystemService(ClipboardManager::class.java)
+                            cm.setPrimaryClip(ClipData.newPlainText("MEMC Player crash", crash))
+                            Toast.makeText(context, "Report copied", Toast.LENGTH_SHORT).show()
+                        }) { Text("Copy") }
+                        OutlinedButton(onClick = {
+                            val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                                .putExtra(Intent.EXTRA_SUBJECT, "MEMC Player crash report")
+                                .putExtra(Intent.EXTRA_TEXT, crash)
+                            context.startActivity(Intent.createChooser(send, "Share crash report"))
+                        }) { Text("Share") }
+                        OutlinedButton(onClick = { CrashLog.clear(context); crash = null }) { Text("Clear") }
+                    }
+                }
             }
         }
 
@@ -215,6 +257,34 @@ fun SettingsScreen(nav: NavController) {
                 ) { st.matchFrameRate.set(it) }
                 Text(
                     "Video is always decoded by the phone's hardware (HEVC, AV1, VP9, H.264) and HDR10/HDR10+ goes straight to the display.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Palette.TextFaint,
+                )
+            }
+        }
+
+        // ---- Picture ----
+        item { SectionTitle("Picture", Modifier.padding(top = 12.dp)) }
+        item {
+            Card {
+                Text("HDR boost: $hdrBoost%", style = MaterialTheme.typography.bodyMedium)
+                Slider(
+                    value = hdrBoost.toFloat(),
+                    onValueChange = { st.hdrBoost.set((it / 5).toInt() * 5) },
+                    valueRange = 0f..100f,
+                )
+                Text(
+                    "Raises brightness by scaling each pixel's light while keeping its hue and saturation, with a soft roll-off so highlights don't clip. Works on SDR and HDR videos.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Palette.TextDim,
+                )
+                ToggleRow(
+                    "Auto HDR (beta)",
+                    "Converts SDR videos to HDR10 so the S24's screen runs in HDR mode with its extra brightness. Real HDR videos are untouched.",
+                    autoHdr,
+                ) { st.autoHdr.set(it) }
+                Text(
+                    "Boost, Auto HDR and smooth motion use the GPU video pipeline: HDR10+ videos then play as HDR10.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Palette.TextFaint,
                 )

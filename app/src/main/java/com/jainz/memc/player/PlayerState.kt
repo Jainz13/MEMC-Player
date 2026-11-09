@@ -155,10 +155,14 @@ class PlayerState(val player: ExoPlayer) {
             else -> "$n ch"
         }
 
+        /** Set by the player when Auto HDR flagged the current SDR video as HDR. */
+        @Volatile var autoHdrActive = false
+
         fun hdrLabel(f: Format?): String? {
             val t = f?.colorInfo?.colorTransfer ?: return null
             return when {
                 f.sampleMimeType == MimeTypes.VIDEO_DOLBY_VISION -> "Dolby Vision"
+                t == C.COLOR_TRANSFER_ST2084 && autoHdrActive -> "Auto HDR"
                 t == C.COLOR_TRANSFER_ST2084 -> "HDR10 / HDR10+"
                 t == C.COLOR_TRANSFER_HLG -> "HLG"
                 else -> null

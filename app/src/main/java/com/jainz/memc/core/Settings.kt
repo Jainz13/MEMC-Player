@@ -82,6 +82,12 @@ class Settings(context: Context) {
     /** ISO language code, "" = device language */
     val subtitleLanguage = string("subtitle_language", "")
 
+    // ---- Picture ----
+    /** 0..100: brightness boost (colour-preserving) */
+    val hdrBoost = int("hdr_boost", 0)
+    /** Convert SDR videos to HDR10 so the screen runs in HDR mode */
+    val autoHdr = bool("auto_hdr", false)
+
     // ---- MEMC (used by the frame interpolation engine, stage 2) ----
     val memcEnabled = bool("memc_enabled", false)
     val memcTargetFps = int("memc_target_fps", 60)

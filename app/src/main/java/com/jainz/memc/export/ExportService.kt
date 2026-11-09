@@ -63,17 +63,45 @@ class ExportService : Service() {
     private var tempFile: File? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private val progress = ProgressHolder()
+    private var isForeground = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        goForeground("Preparing export…", -1)
-        if (intent?.action == ACTION_CANCEL) {
-            cancelCurrent()
-        } else if (transformer == null) {
-            startNext()
+        if (!isForeground) {
+            try {
+                goForeground("Preparing export…", -1)
+                isForeground = true
+            } catch (e: Exception) {
+                // Android refused to run the export as a foreground job: report it instead of crashing.
+                ExportManager.nextQueued()?.let { job ->
+                    ExportManager.update(job.id) {
+                        it.copy(status = ExportStatus.FAILED, message = "Android blocked the export: ${e.message ?: e.javaClass.simpleName}")
+                    }
+                }
+                stopSelf()
+                return START_NOT_STICKY
+            }
+        }
+        try {
+            if (intent?.action == ACTION_CANCEL) {
+                cancelCurrent()
+            } else if (transformer == null) {
+                startNext()
+            }
+        } catch (e: Exception) {
+            failCurrent("Export error: ${e.message ?: e.javaClass.simpleName}")
         }
         return START_NOT_STICKY
+    }
+
+    private fun failCurrent(message: String) {
+        transformer?.let { runCatching { it.cancel() } }
+        transformer = null
+        handler.removeCallbacksAndMessages(null)
+        tempFile?.delete()
+        if (currentId >= 0) ExportManager.update(currentId) { it.copy(status = ExportStatus.FAILED, message = message) }
+        handler.post { runCatching { startNext() } }
     }
 
     // ---- Queue ----------------------------------------------------------------------------
@@ -83,6 +111,7 @@ class ExportService : Service() {
         if (job == null) {
             releaseWakeLock()
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            isForeground = false
             stopSelf()
             return
         }
@@ -94,6 +123,14 @@ class ExportService : Service() {
     }
 
     private fun begin(job: ExportJob) {
+        try {
+            beginUnsafe(job)
+        } catch (e: Throwable) {
+            failCurrent("Could not start the export: ${e.message ?: e.javaClass.simpleName}")
+        }
+    }
+
+    private fun beginUnsafe(job: ExportJob) {
         val dir = getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: cacheDir
         val out = File(dir, "export-${job.id}.mp4").also { it.delete() }
         tempFile = out
@@ -121,11 +158,19 @@ class ExportService : Service() {
             .setAssetLoaderFactory(assetLoader)
             .addListener(object : Transformer.Listener {
                 override fun onCompleted(composition: Composition, exportResult: ExportResult) {
-                    onFinished(job, out)
+                    try {
+                        onFinished(job, out)
+                    } catch (e: Exception) {
+                        failCurrent("Saving failed: ${e.message}")
+                    }
                 }
 
                 override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
-                    onFailed(job, exportException)
+                    try {
+                        onFailed(job, exportException)
+                    } catch (e: Exception) {
+                        failCurrent("${exportException.errorCodeName}: ${exportException.message}")
+                    }
                 }
             })
             .build()
@@ -154,7 +199,10 @@ class ExportService : Service() {
                     val p = progress.progress
                     ExportManager.update(currentId) { it.copy(progress = p) }
                     val title = ExportManager.get(currentId)?.title ?: "video"
-                    goForeground("Exporting $title at 60 fps", p)
+                    runCatching {
+                        getSystemService(NotificationManager::class.java)
+                            .notify(NOTIFICATION_ID, progressNotification("Exporting $title at 60 fps", p))
+                    }
                 }
                 handler.postDelayed(this, 1000)
             }
@@ -260,16 +308,18 @@ class ExportService : Service() {
         PendingIntent.FLAG_IMMUTABLE,
     )
 
+    private fun progressNotification(text: String, percent: Int) = NotificationCompat.Builder(this, channel())
+        .setSmallIcon(R.drawable.ic_stat_memc)
+        .setContentTitle("MEMC Player")
+        .setContentText(text)
+        .setOnlyAlertOnce(true)
+        .setOngoing(true)
+        .setContentIntent(openAppIntent())
+        .setProgress(100, percent.coerceAtLeast(0), percent < 0)
+        .build()
+
     private fun goForeground(text: String, percent: Int) {
-        val n = NotificationCompat.Builder(this, channel())
-            .setSmallIcon(R.drawable.ic_stat_memc)
-            .setContentTitle("MEMC Player")
-            .setContentText(text)
-            .setOnlyAlertOnce(true)
-            .setOngoing(true)
-            .setContentIntent(openAppIntent())
-            .setProgress(100, percent.coerceAtLeast(0), percent < 0)
-            .build()
+        val n = progressNotification(text, percent)
         val type = when {
             Build.VERSION.SDK_INT >= 35 -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
             else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC

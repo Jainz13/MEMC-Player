@@ -18,6 +18,7 @@ import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import com.jainz.memc.data.smb.SmbDataSource
 import com.jainz.memc.core.Settings
+import com.jainz.memc.memc.PictureControl
 import com.jainz.memc.data.smb.SmbPool
 import java.util.Locale
 
@@ -31,7 +32,7 @@ import java.util.Locale
 @UnstableApi
 object PlayerFactory {
 
-    fun create(context: Context, smb: SmbPool, settings: Settings): ExoPlayer {
+    fun create(context: Context, smb: SmbPool, settings: Settings, picture: PictureControl? = null): ExoPlayer {
         val renderers = DefaultRenderersFactory(context)
             // Normally the phone's own decoders first and FFmpeg only for formats they can't handle;
             // "Always use FFmpeg for audio" flips that for audio.
@@ -75,7 +76,7 @@ object PlayerFactory {
             // Blu-ray .m2ts files carry DTS in a stream type that needs this flag.
             .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ENABLE_HDMV_DTS_AUDIO_STREAMS)
 
-        val mediaSources = DefaultMediaSourceFactory(RoutingDataSource.Factory(context, smb), ColorFixExtractorsFactory(extractors))
+        val mediaSources = DefaultMediaSourceFactory(RoutingDataSource.Factory(context, smb), ColorFixExtractorsFactory(extractors, picture))
 
         return ExoPlayer.Builder(context, renderers)
             .setTrackSelector(trackSelector)

@@ -89,6 +89,10 @@ import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import com.jainz.memc.memc.MemcControl
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.runtime.DisposableEffect
+import com.jainz.memc.memc.PictureControl
 import com.jainz.memc.ui.Format
 import com.jainz.memc.ui.theme.Palette
 import kotlinx.coroutines.delay
@@ -122,6 +126,8 @@ fun PlayerScreen(
     onMemcChange: (enabled: Boolean, fps: Int, quality: Int) -> Unit,
     onExport: () -> Unit,
     onPlayerView: (PlayerView) -> Unit,
+    picture: PictureControl,
+    onPictureChange: (boost: Float, autoHdr: Boolean) -> Unit,
 ) {
     val player = state.player
     val activity = LocalContext.current as Activity
@@ -150,12 +156,38 @@ fun PlayerScreen(
     }
 
     var memcActive by remember { mutableStateOf(false) }
+    // Geometry: aspect-ratio override (null = the video's own) and zoom (1 = no zoom).
+    var aspect by remember { mutableStateOf<Float?>(null) }
+    var zoomScale by remember { mutableFloatStateOf(1f) }
+    var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
+
+    fun applyGeometry(view: PlayerView) {
+        val frame = view.findViewById<AspectRatioFrameLayout>(androidx.media3.ui.R.id.exo_content_frame) ?: return
+        val vs = player.videoSize
+        val natural = if (vs.width > 0 && vs.height > 0) vs.width * vs.pixelWidthHeightRatio / vs.height else 0f
+        val ratio = aspect ?: natural
+        if (ratio > 0f) frame.setAspectRatio(ratio)
+        frame.scaleX = zoomScale
+        frame.scaleY = zoomScale
+    }
+
+    // The player view resets the aspect ratio whenever the video size changes; re-apply ours after it.
+    DisposableEffect(player) {
+        val listener = object : androidx.media3.common.Player.Listener {
+            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                playerViewRef?.let { v -> v.post { applyGeometry(v) } }
+            }
+        }
+        player.addListener(listener)
+        onDispose { player.removeListener(listener) }
+    }
 
     // Position ticker for the seek bar (and the MEMC badge).
     LaunchedEffect(Unit) {
         while (true) {
             state.tick()
             memcActive = memc.active && memc.enabled
+            PlayerState.autoHdrActive = picture.autoHdr && picture.fakedHdr
             delay(250)
         }
     }
@@ -204,10 +236,14 @@ fun PlayerScreen(
                     setShutterBackgroundColor(AColor.BLACK)
                     setKeepContentOnPlayerReset(true)
                     setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
-                }.also(onPlayerView)
+                }.also {
+                    playerViewRef = it
+                    onPlayerView(it)
+                }
             },
             update = { view ->
                 view.resizeMode = resizeMode
+                applyGeometry(view)
                 view.subtitleView?.apply {
                     setApplyEmbeddedFontSizes(false)
                     setStyle(
@@ -302,25 +338,27 @@ fun PlayerScreen(
                         }
                     }
                     .pointerInput(locked) {
-                        // Pinch out = crop to fill the screen, pinch in = fit.
+                        // Pinch to zoom (100-300 %); a pinch back to ~100 % snaps to no zoom.
                         if (locked) return@pointerInput
                         awaitEachGesture {
-                            var zoom = 1f
+                            var startScale = zoomScale
                             var multi = false
                             do {
                                 val event = awaitPointerEvent()
                                 if (event.changes.count { it.pressed } >= 2) {
+                                    if (!multi) startScale = zoomScale
                                     multi = true
-                                    zoom *= event.calculateZoom()
+                                    startScale *= event.calculateZoom()
+                                    zoomScale = startScale.coerceIn(1f, 3f)
+                                    label = "Zoom ${(zoomScale * 100).roundToInt()}%"
+                                    dragging = true
                                     event.changes.forEach { if (it.positionChanged()) it.consume() }
                                 }
                             } while (event.changes.any { it.pressed })
-                            if (multi && zoom > 1.12f) {
-                                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                flash("Crop to fill")
-                            } else if (multi && zoom < 0.9f) {
-                                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                flash("Fit to screen")
+                            if (multi) {
+                                if (zoomScale < 1.05f) zoomScale = 1f
+                                dragging = false
+                                flash("Zoom ${(zoomScale * 100).roundToInt()}%")
                             }
                         }
                     }
@@ -540,6 +578,12 @@ fun PlayerScreen(
                                 state,
                                 resizeMode = resizeMode,
                                 onResize = { resizeMode = it },
+                                aspect = aspect,
+                                onAspect = { aspect = it },
+                                zoom = zoomScale,
+                                onZoom = { zoomScale = it },
+                                picture = picture,
+                                onPictureChange = onPictureChange,
                                 memc = memc,
                                 memcAvailable = memcAvailable,
                                 onMemcChange = onMemcChange,
@@ -708,6 +752,12 @@ private fun VideoTab(
     state: PlayerState,
     resizeMode: Int,
     onResize: (Int) -> Unit,
+    aspect: Float?,
+    onAspect: (Float?) -> Unit,
+    zoom: Float,
+    onZoom: (Float) -> Unit,
+    picture: PictureControl,
+    onPictureChange: (Float, Boolean) -> Unit,
     memc: MemcControl,
     memcAvailable: Boolean,
     onMemcChange: (Boolean, Int, Int) -> Unit,
@@ -715,7 +765,7 @@ private fun VideoTab(
 ) {
     val player = state.player
     Column {
-        PanelHeading("Zoom")
+        PanelHeading("Scaling")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(
                 AspectRatioFrameLayout.RESIZE_MODE_FIT to "Fit",
@@ -724,6 +774,68 @@ private fun VideoTab(
             ).forEach { (mode, name) ->
                 FilterChip(selected = resizeMode == mode, onClick = { onResize(mode) }, label = { Text(name) })
             }
+        }
+
+        PanelHeading("Aspect ratio")
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+        ) {
+            listOf(
+                null to "Original", 16f / 9f to "16:9", 4f / 3f to "4:3", 21f / 9f to "21:9",
+                2.39f to "2.39:1", 1.85f to "1.85:1", 2f to "2:1",
+            ).forEach { (ratio, name) ->
+                FilterChip(selected = aspect == ratio, onClick = { onAspect(ratio) }, label = { Text(name) })
+            }
+        }
+        PanelHeading("Zoom  ${(zoom * 100).roundToInt()}%")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Slider(
+                value = zoom,
+                onValueChange = { onZoom((it * 20).roundToInt() / 20f) },
+                valueRange = 1f..3f,
+                colors = SliderDefaults.colors(thumbColor = Palette.Accent, activeTrackColor = Palette.Accent),
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = { onZoom(1f); onAspect(null); onResize(AspectRatioFrameLayout.RESIZE_MODE_FIT) }) {
+                Text("Reset")
+            }
+        }
+        Text(
+            "Tip: pinch the video to zoom; 133% removes black bars from 2.39:1 films on a 16:9 picture.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Palette.TextFaint,
+        )
+
+        PanelHeading("Picture")
+        var boost by remember { mutableFloatStateOf(picture.boost) }
+        Text(
+            "HDR boost  ${(boost * 100).roundToInt()}%",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.White,
+        )
+        Slider(
+            value = boost,
+            onValueChange = { boost = (it * 20).roundToInt() / 20f; picture.boost = boost },
+            onValueChangeFinished = { onPictureChange(boost, picture.autoHdr) },
+            valueRange = 0f..1f,
+            colors = SliderDefaults.colors(thumbColor = Palette.Accent, activeTrackColor = Palette.Accent),
+        )
+        Text(
+            "Brightens the picture by raising light levels while keeping each colour's hue and saturation, so it doesn't wash out.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Palette.TextFaint,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("Auto HDR (beta)", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                Text(
+                    "Turns SDR videos into HDR10 so the screen runs in HDR mode. Switching restarts the video.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Palette.TextDim,
+                )
+            }
+            Switch(checked = picture.autoHdr, onCheckedChange = { onPictureChange(boost, it) })
         }
 
         PanelHeading("Speed")

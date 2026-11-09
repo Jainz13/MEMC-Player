@@ -46,6 +46,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.jainz.memc.MemcApp
 import com.jainz.memc.Routes
+import com.jainz.memc.core.CrashLog
 import com.jainz.memc.data.db.MovieItem
 import com.jainz.memc.data.db.ShowItem
 import com.jainz.memc.data.scan.ScanWorker
@@ -84,6 +85,7 @@ fun HomeScreen(nav: NavController) {
     val unidentified by remember { g.db.videos().unidentified() }.collectAsStateWithLifecycle(emptyList())
     val count by remember { g.db.videos().observeCount() }.collectAsStateWithLifecycle(-1)
     val tmdbKey by g.settings.tmdbKey.flow.collectAsStateWithLifecycle()
+    val hadCrash = remember { CrashLog.read(context) != null }
 
     val recentMovies = remember(movies) { movies.sortedByDescending { it.addedAt } }
     val recentShows = remember(shows) { shows.sortedByDescending { it.addedAt } }
@@ -94,6 +96,25 @@ fun HomeScreen(nav: NavController) {
             if (featured.isNotEmpty()) Hero(featured, nav) else PlainHeader(nav)
         }
         item { ScanStatus() }
+        if (hadCrash) {
+            item {
+                Surface(
+                    onClick = { nav.navigate(Routes.SETTINGS) },
+                    shape = RoundedCornerShape(14.dp),
+                    color = Palette.Surface,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("The app closed unexpectedly last time", style = MaterialTheme.typography.titleMedium, color = Palette.Danger)
+                        Text(
+                            "Tap to see the crash report in Settings and share it.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Palette.TextDim,
+                        )
+                    }
+                }
+            }
+        }
 
         if (count == 0) {
             item {

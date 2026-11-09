@@ -77,7 +77,8 @@ class MemcShaderProgram(
     private var endOfStreamPending = false
 
     private val coeffs = if (useHdr) floatArrayOf(0.2627f, 0.6780f, 0.0593f) else floatArrayOf(0.2126f, 0.7152f, 0.0722f)
-    private val lumaScale = if (useHdr) 60f else 3f
+    // Media3's HDR working space is linear with 1.0 = 1000 nits; bring ~100 nits to ~1.
+    private val lumaScale = if (useHdr) 10f else 3f
 
     // ---- GlShaderProgram -------------------------------------------------------------
 

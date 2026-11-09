@@ -17,6 +17,8 @@ import androidx.media3.ui.PlayerView
 import com.jainz.memc.export.ExportManager
 import com.jainz.memc.memc.MemcControl
 import com.jainz.memc.memc.MemcEffect
+import com.jainz.memc.memc.PictureControl
+import com.jainz.memc.memc.PictureEffect
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
@@ -60,6 +62,7 @@ class PlayerActivity : ComponentActivity() {
 
     // ---- MEMC ----
     private lateinit var memc: MemcControl
+    private lateinit var picture: PictureControl
     private var memcInstalled = false
     private var playerView: PlayerView? = null
 
@@ -73,18 +76,22 @@ class PlayerActivity : ComponentActivity() {
         }
         hideSystemBars()
 
-        player = PlayerFactory.create(this, g.smb, g.settings)
-        state = PlayerState(player)
         // A previous attempt showed this video can't go through the effect pipeline: play it plain.
         val memcAllowed = !intent.getBooleanExtra(EXTRA_NO_MEMC, false)
+        picture = PictureControl(
+            boost = g.settings.hdrBoost.value / 100f,
+            autoHdr = g.settings.autoHdr.value && memcAllowed,
+        )
+        player = PlayerFactory.create(this, g.smb, g.settings, picture)
+        state = PlayerState(player)
         memc = MemcControl(
             enabled = g.settings.memcEnabled.value && memcAllowed,
             targetFps = g.settings.memcTargetFps.value,
             quality = g.settings.memcQuality.value,
         )
-        // Only build the effect pipeline when MEMC is wanted, so plain playback keeps the
+        // Only build the effect pipeline when something needs it, so plain playback keeps the
         // direct HDR10+ path to the display.
-        if (memc.enabled) installMemc()
+        if (memcAllowed && (memc.enabled || picture.boost > 0f || picture.autoHdr)) installMemc()
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (isPlaying) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -165,6 +172,8 @@ class PlayerActivity : ComponentActivity() {
                     memc = memc,
                     memcAvailable = memcAllowed,
                     onMemcChange = { enabled, fps, quality -> updateMemc(enabled, fps, quality) },
+                    picture = picture,
+                    onPictureChange = { boost, autoHdr -> updatePicture(boost, autoHdr) },
                     onExport = { exportCurrent() },
                     onPlayerView = { view ->
                         playerView = view
@@ -354,11 +363,26 @@ class PlayerActivity : ComponentActivity() {
 
     // ---- MEMC -----------------------------------------------------------------------------
 
+    /** Picture adjustments first, then frame interpolation. Both pass frames through untouched when off. */
     private fun installMemc() {
         if (memcInstalled) return
-        player.setVideoEffects(listOf(MemcEffect(memc)))
+        player.setVideoEffects(listOf(PictureEffect(picture), MemcEffect(memc)))
         memcInstalled = true
         applyDisplayRate()
+    }
+
+    private fun updatePicture(boost: Float, autoHdr: Boolean) {
+        g.settings.hdrBoost.set((boost * 100).toInt())
+        picture.boost = boost
+        if (autoHdr != picture.autoHdr) {
+            // The video must be re-read to be flagged as HDR (or not): restart at the same spot.
+            g.settings.autoHdr.set(autoHdr)
+            saveProgress()
+            intent.putExtra(EXTRA_START_MS, player.currentPosition)
+            recreate()
+            return
+        }
+        if (boost > 0f) installMemc()
     }
 
     private fun updateMemc(enabled: Boolean, fps: Int, quality: Int) {

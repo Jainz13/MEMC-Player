@@ -16,6 +16,7 @@ import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.PositionHolder
 import androidx.media3.extractor.SeekMap
 import androidx.media3.extractor.TrackOutput
+import com.jainz.memc.memc.PictureControl
 
 /**
  * Many 4K releases (especially MKV) keep their HDR colour information only inside the HEVC
@@ -62,21 +63,49 @@ object StreamColorInfo {
     }
 
     private const val H265_SPS = 33
+
+    /**
+     * Auto HDR: flag an SDR video as PQ / BT.2020 so the effect pipeline runs in HDR and the
+     * display switches to HDR mode. PictureEffect then undoes that decoding and expands the real
+     * SDR picture into HDR. Real HDR videos are left alone.
+     */
+    fun autoHdr(format: Format, picture: PictureControl?): Format {
+        if (picture == null || !picture.autoHdr) return format
+        val transfer = format.colorInfo?.colorTransfer ?: Format.NO_VALUE
+        if (transfer == C.COLOR_TRANSFER_ST2084 || transfer == C.COLOR_TRANSFER_HLG) {
+            picture.fakedHdr = false
+            return format
+        }
+        picture.fakedHdr = true
+        val range = format.colorInfo?.colorRange?.takeIf { it != Format.NO_VALUE } ?: C.COLOR_RANGE_LIMITED
+        return format.buildUpon()
+            .setColorInfo(
+                ColorInfo.Builder()
+                    .setColorSpace(C.COLOR_SPACE_BT2020)
+                    .setColorRange(range)
+                    .setColorTransfer(C.COLOR_TRANSFER_ST2084)
+                    .build()
+            )
+            .build()
+    }
 }
 
 @UnstableApi
-class ColorFixExtractorsFactory(private val delegate: ExtractorsFactory) : ExtractorsFactory {
+class ColorFixExtractorsFactory(
+    private val delegate: ExtractorsFactory,
+    private val picture: PictureControl? = null,
+) : ExtractorsFactory {
     override fun createExtractors(): Array<Extractor> =
-        delegate.createExtractors().map { ColorFixExtractor(it) }.toTypedArray()
+        delegate.createExtractors().map { ColorFixExtractor(it, picture) }.toTypedArray()
 
     override fun createExtractors(uri: Uri, responseHeaders: Map<String, List<String>>): Array<Extractor> =
-        delegate.createExtractors(uri, responseHeaders).map { ColorFixExtractor(it) }.toTypedArray()
+        delegate.createExtractors(uri, responseHeaders).map { ColorFixExtractor(it, picture) }.toTypedArray()
 }
 
 @UnstableApi
-private class ColorFixExtractor(private val inner: Extractor) : Extractor {
+private class ColorFixExtractor(private val inner: Extractor, private val picture: PictureControl?) : Extractor {
     override fun sniff(input: ExtractorInput): Boolean = inner.sniff(input)
-    override fun init(output: ExtractorOutput) = inner.init(ColorFixOutput(output))
+    override fun init(output: ExtractorOutput) = inner.init(ColorFixOutput(output, picture))
     override fun read(input: ExtractorInput, seekPosition: PositionHolder): Int = inner.read(input, seekPosition)
     override fun seek(position: Long, timeUs: Long) = inner.seek(position, timeUs)
     override fun release() = inner.release()
@@ -84,10 +113,10 @@ private class ColorFixExtractor(private val inner: Extractor) : Extractor {
 }
 
 @UnstableApi
-private class ColorFixOutput(private val inner: ExtractorOutput) : ExtractorOutput {
+private class ColorFixOutput(private val inner: ExtractorOutput, private val picture: PictureControl?) : ExtractorOutput {
     override fun track(id: Int, type: Int): TrackOutput {
         val track = inner.track(id, type)
-        return if (type == C.TRACK_TYPE_VIDEO) ColorFixTrackOutput(track) else track
+        return if (type == C.TRACK_TYPE_VIDEO) ColorFixTrackOutput(track, picture) else track
     }
 
     override fun endTracks() = inner.endTracks()
@@ -95,8 +124,8 @@ private class ColorFixOutput(private val inner: ExtractorOutput) : ExtractorOutp
 }
 
 @UnstableApi
-private class ColorFixTrackOutput(private val inner: TrackOutput) : TrackOutput {
-    override fun format(format: Format) = inner.format(StreamColorInfo.fix(format))
+private class ColorFixTrackOutput(private val inner: TrackOutput, private val picture: PictureControl?) : TrackOutput {
+    override fun format(format: Format) = inner.format(StreamColorInfo.autoHdr(StreamColorInfo.fix(format), picture))
 
     override fun sampleData(input: DataReader, length: Int, allowEndOfInput: Boolean, sampleDataPart: Int): Int =
         inner.sampleData(input, length, allowEndOfInput, sampleDataPart)
