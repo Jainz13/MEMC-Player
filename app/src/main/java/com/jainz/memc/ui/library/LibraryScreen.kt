@@ -72,6 +72,7 @@ import com.jainz.memc.ui.Play
 import com.jainz.memc.ui.components.Artwork
 import com.jainz.memc.ui.components.CardShape
 import com.jainz.memc.ui.components.EmptyMessage
+import com.jainz.memc.ui.components.ExportsSection
 import com.jainz.memc.ui.components.FixMatchDialog
 import com.jainz.memc.ui.components.ProgressStrip
 import com.jainz.memc.ui.components.ScanStatus
@@ -110,6 +111,8 @@ fun LibraryScreen(nav: NavController) {
                 ScanStatus()
             }
         }
+
+        item { ExportsSection() }
 
         item { SectionTitle("Network shares", Modifier.padding(top = 12.dp)) }
         items(sources, key = { "s${it.id}" }) { s ->

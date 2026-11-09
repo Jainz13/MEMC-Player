@@ -15,6 +15,10 @@
     <uses-permission
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
 
     <application
         android:name=".MemcApp"
@@ -63,5 +67,11 @@
                 <data android:scheme="smb" />
             </intent-filter>
         </activity>
+
+        <!-- 60 fps export runs here so it keeps going with the screen off. -->
+        <service
+            android:name=".export.ExportService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync|mediaProcessing" />
     </application>
 </manifest>

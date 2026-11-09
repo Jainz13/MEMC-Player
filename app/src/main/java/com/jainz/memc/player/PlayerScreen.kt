@@ -88,6 +88,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
+import com.jainz.memc.memc.MemcControl
 import com.jainz.memc.ui.Format
 import com.jainz.memc.ui.theme.Palette
 import kotlinx.coroutines.delay
@@ -116,6 +117,11 @@ fun PlayerScreen(
     onDismissResume: () -> Unit,
     onBack: () -> Unit,
     onPip: () -> Unit,
+    memc: MemcControl,
+    memcAvailable: Boolean,
+    onMemcChange: (enabled: Boolean, fps: Int, quality: Int) -> Unit,
+    onExport: () -> Unit,
+    onPlayerView: (PlayerView) -> Unit,
 ) {
     val player = state.player
     val activity = LocalContext.current as Activity
@@ -143,10 +149,13 @@ fun PlayerScreen(
         interaction++
     }
 
-    // Position ticker for the seek bar.
+    var memcActive by remember { mutableStateOf(false) }
+
+    // Position ticker for the seek bar (and the MEMC badge).
     LaunchedEffect(Unit) {
         while (true) {
             state.tick()
+            memcActive = memc.active && memc.enabled
             delay(250)
         }
     }
@@ -195,7 +204,7 @@ fun PlayerScreen(
                     setShutterBackgroundColor(AColor.BLACK)
                     setKeepContentOnPlayerReset(true)
                     setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
-                }
+                }.also(onPlayerView)
             },
             update = { view ->
                 view.resizeMode = resizeMode
@@ -421,6 +430,17 @@ fun PlayerScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         BarIcon(Icons.Filled.Lock, "Lock controls") { locked = true; controls = true; poke() }
                         Spacer(Modifier.weight(1f))
+                        if (memcActive) {
+                            Text(
+                                "MEMC ${memc.targetFps}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Black,
+                                modifier = Modifier
+                                    .padding(end = 8.dp)
+                                    .background(Palette.Accent, RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
                         val video = state.videoFormat
                         val hdr = PlayerState.hdrLabel(video)
                         if (video != null) {
@@ -520,6 +540,10 @@ fun PlayerScreen(
                                 state,
                                 resizeMode = resizeMode,
                                 onResize = { resizeMode = it },
+                                memc = memc,
+                                memcAvailable = memcAvailable,
+                                onMemcChange = onMemcChange,
+                                onExport = onExport,
                             )
                         }
                     }
@@ -680,7 +704,15 @@ private fun SubtitlesTab(state: PlayerState, scale: Float, onScale: (Float) -> U
 
 @UnstableApi
 @Composable
-private fun VideoTab(state: PlayerState, resizeMode: Int, onResize: (Int) -> Unit) {
+private fun VideoTab(
+    state: PlayerState,
+    resizeMode: Int,
+    onResize: (Int) -> Unit,
+    memc: MemcControl,
+    memcAvailable: Boolean,
+    onMemcChange: (Boolean, Int, Int) -> Unit,
+    onExport: () -> Unit,
+) {
     val player = state.player
     Column {
         PanelHeading("Zoom")
@@ -706,18 +738,62 @@ private fun VideoTab(state: PlayerState, resizeMode: Int, onResize: (Int) -> Uni
         }
 
         PanelHeading("Smooth motion (MEMC)")
+        var on by remember { mutableStateOf(memc.enabled) }
+        var fps by remember { mutableIntStateOf(memc.targetFps) }
+        var quality by remember { mutableIntStateOf(memc.quality) }
+        var status by remember { mutableStateOf("") }
+        LaunchedEffect(Unit) {
+            while (true) {
+                status = memcStatus(memc, memcAvailable)
+                delay(500)
+            }
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Frame interpolation", style = MaterialTheme.typography.bodyMedium, color = Palette.TextDim)
+                Text("Frame interpolation", style = MaterialTheme.typography.bodyMedium, color = Color.White)
                 Text(
-                    "Real-time 60/120 fps on the S24 Ultra's NPU arrives with the MEMC engine update. " +
-                        "Its defaults are already in Settings → Smooth motion.",
+                    status,
                     style = MaterialTheme.typography.bodySmall,
-                    color = Palette.TextFaint,
+                    color = if (memc.active && on) Palette.Accent else Palette.TextDim,
                 )
             }
-            Switch(checked = false, onCheckedChange = null, enabled = false)
+            Switch(
+                checked = on && memcAvailable,
+                enabled = memcAvailable,
+                onCheckedChange = {
+                    on = it
+                    onMemcChange(it, fps, quality)
+                },
+            )
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
+            listOf(60, 120).forEach { f ->
+                FilterChip(
+                    selected = fps == f,
+                    onClick = { fps = f; onMemcChange(on, f, quality) },
+                    label = { Text("$f fps") },
+                )
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(0 to "Battery saver", 1 to "Balanced", 2 to "Best").forEach { (q, label) ->
+                FilterChip(
+                    selected = quality == q,
+                    onClick = { quality = q; onMemcChange(on, fps, q) },
+                    label = { Text(label) },
+                )
+            }
+        }
+
+        PanelHeading("Export")
+        TextButton(onClick = onExport) {
+            Text("Export this video at 60 fps", color = Palette.Accent)
+        }
+        Text(
+            "Renders a new 60 fps copy in the background (Movies/MEMC Player). Watching it later needs no interpolation, so it plays cool.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Palette.TextFaint,
+        )
 
         PanelHeading("Now playing")
         playbackInfo(state).forEach { (k, value) ->
@@ -726,6 +802,18 @@ private fun VideoTab(state: PlayerState, resizeMode: Int, onResize: (Int) -> Uni
                 Text(value, style = MaterialTheme.typography.bodySmall, color = Color.White)
             }
         }
+    }
+}
+
+private fun memcStatus(memc: MemcControl, available: Boolean): String {
+    val src = memc.sourceFps
+    return when {
+        !available -> "Not available for this video (the video pipeline refused it)"
+        !memc.enabled -> "Off"
+        memc.active -> String.format(java.util.Locale.US, "Interpolating %.3f → %d fps", src, memc.targetFps)
+        src > 0f && src >= memc.targetFps * 0.8f ->
+            String.format(java.util.Locale.US, "Video is already %.0f fps - nothing to add", src)
+        else -> "Starting… (measuring the video's frame rate)"
     }
 }
 

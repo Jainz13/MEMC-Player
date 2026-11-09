@@ -80,6 +80,7 @@ fun SettingsScreen(nav: NavController) {
     val subsOn by st.subtitlesOn.flow.collectAsStateWithLifecycle()
     val subLang by st.subtitleLanguage.flow.collectAsStateWithLifecycle()
     val memcFps by st.memcTargetFps.flow.collectAsStateWithLifecycle()
+    val memcOn by st.memcEnabled.flow.collectAsStateWithLifecycle()
     val memcQuality by st.memcQuality.flow.collectAsStateWithLifecycle()
     val caps = remember { DeviceCaps.read(context) }
 
@@ -228,12 +229,12 @@ fun SettingsScreen(nav: NavController) {
                     Column(Modifier.weight(1f)) {
                         Text("Frame interpolation", style = MaterialTheme.typography.bodyMedium)
                         Text(
-                            "Arrives with the MEMC engine update. The choices below are saved and used from then on.",
+                            "Raises 24/25/30 fps videos to 60 or 120 fps on the GPU. Can also be switched in the player (Video tab).",
                             style = MaterialTheme.typography.bodySmall,
                             color = Palette.TextDim,
                         )
                     }
-                    Switch(checked = false, onCheckedChange = null, enabled = false)
+                    Switch(checked = memcOn, onCheckedChange = { st.memcEnabled.set(it) })
                 }
                 Text("Target frame rate", style = MaterialTheme.typography.bodyMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -247,6 +248,11 @@ fun SettingsScreen(nav: NavController) {
                         FilterChip(selected = memcQuality == v, onClick = { st.memcQuality.set(v) }, label = { Text(label) })
                     }
                 }
+                Text(
+                    "With smooth motion on, HDR10+ videos play as HDR10 (the dynamic brightness data can't pass through the effect pipeline).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Palette.TextFaint,
+                )
             }
         }
 

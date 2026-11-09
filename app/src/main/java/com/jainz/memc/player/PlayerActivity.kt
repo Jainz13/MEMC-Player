@@ -8,6 +8,15 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Rational
 import android.view.WindowManager
+import android.view.Surface
+import android.view.SurfaceView
+import android.widget.Toast
+import androidx.media3.common.C
+import androidx.media3.common.PlaybackException
+import androidx.media3.ui.PlayerView
+import com.jainz.memc.export.ExportManager
+import com.jainz.memc.memc.MemcControl
+import com.jainz.memc.memc.MemcEffect
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
@@ -49,6 +58,11 @@ class PlayerActivity : ComponentActivity() {
     private var playlistIds: List<Long?> = emptyList()
     private val techSaved = HashSet<Long>()
 
+    // ---- MEMC ----
+    private lateinit var memc: MemcControl
+    private var memcInstalled = false
+    private var playerView: PlayerView? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -61,6 +75,16 @@ class PlayerActivity : ComponentActivity() {
 
         player = PlayerFactory.create(this, g.smb, g.settings)
         state = PlayerState(player)
+        // A previous attempt showed this video can't go through the effect pipeline: play it plain.
+        val memcAllowed = !intent.getBooleanExtra(EXTRA_NO_MEMC, false)
+        memc = MemcControl(
+            enabled = g.settings.memcEnabled.value && memcAllowed,
+            targetFps = g.settings.memcTargetFps.value,
+            quality = g.settings.memcQuality.value,
+        )
+        // Only build the effect pipeline when MEMC is wanted, so plain playback keeps the
+        // direct HDR10+ path to the display.
+        if (memc.enabled) installMemc()
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (isPlaying) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -100,6 +124,19 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
 
+            override fun onPlayerError(error: PlaybackException) {
+                val pipelineFailed = error.errorCode == PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSOR_INIT_FAILED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED
+                if (memcInstalled && pipelineFailed) {
+                    // Fall back to normal playback at the same spot instead of showing an error.
+                    saveProgress()
+                    intent.putExtra(EXTRA_NO_MEMC, true)
+                    intent.putExtra(EXTRA_START_MS, player.currentPosition)
+                    Toast.makeText(this@PlayerActivity, "Smooth motion isn't available for this video - playing normally", Toast.LENGTH_LONG).show()
+                    recreate()
+                }
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) {
                     saveProgress(finished = true)
@@ -125,6 +162,14 @@ class PlayerActivity : ComponentActivity() {
                     onDismissResume = { resumeNotice = null },
                     onBack = { finish() },
                     onPip = { enterPip() },
+                    memc = memc,
+                    memcAvailable = memcAllowed,
+                    onMemcChange = { enabled, fps, quality -> updateMemc(enabled, fps, quality) },
+                    onExport = { exportCurrent() },
+                    onPlayerView = { view ->
+                        playerView = view
+                        applyDisplayRate()
+                    },
                 )
             }
         }
@@ -172,7 +217,10 @@ class PlayerActivity : ComponentActivity() {
             }
 
             playlistIds = entries.map { it.first }
-            val resumeAt = start?.takeIf { !fromStart && !it.watched && it.positionMs > 30_000 }?.positionMs ?: 0L
+            val explicitStart = intent.getLongExtra(EXTRA_START_MS, -1L)
+            intent.removeExtra(EXTRA_START_MS)
+            val resumeAt = if (explicitStart >= 0) explicitStart
+            else start?.takeIf { !fromStart && !it.watched && it.positionMs > 30_000 }?.positionMs ?: 0L
             resumeNotice = if (resumeAt > 0) resumeAt else null
 
             player.setMediaItems(entries.map { it.second }, 0, resumeAt)
@@ -304,6 +352,66 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    // ---- MEMC -----------------------------------------------------------------------------
+
+    private fun installMemc() {
+        if (memcInstalled) return
+        player.setVideoEffects(listOf(MemcEffect(memc)))
+        memcInstalled = true
+        applyDisplayRate()
+    }
+
+    private fun updateMemc(enabled: Boolean, fps: Int, quality: Int) {
+        g.settings.memcEnabled.set(enabled)
+        g.settings.memcTargetFps.set(fps)
+        g.settings.memcQuality.set(quality)
+        memc.targetFps = fps
+        memc.quality = quality
+        memc.enabled = enabled
+        if (enabled) installMemc()
+        applyDisplayRate()
+    }
+
+    /**
+     * With MEMC on, the screen must run at the output rate (60/120 Hz); otherwise the player
+     * would pick a refresh rate for the original 24 fps and drop the new frames.
+     */
+    private fun applyDisplayRate() {
+        val memcOn = memcInstalled && memc.enabled
+        player.setVideoChangeFrameRateStrategy(
+            when {
+                memcOn -> C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF
+                g.settings.matchFrameRate.value -> C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS
+                else -> C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF
+            }
+        )
+        if (Build.VERSION.SDK_INT >= 30) {
+            val surface = (playerView?.videoSurfaceView as? SurfaceView)?.holder?.surface
+            if (surface != null && surface.isValid) {
+                runCatching {
+                    surface.setFrameRate(
+                        if (memcOn) memc.targetFps.toFloat() else 0f,
+                        Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun exportCurrent() {
+        val item = player.currentMediaItem ?: return
+        val uri = item.localConfiguration?.uri?.toString() ?: return
+        val title = item.mediaMetadata.title?.toString() ?: titleFromUri(uri)
+        val sub = item.mediaMetadata.subtitle?.toString()
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
+        ExportManager.enqueue(this, uri, if (sub != null && sub.contains("S") && sub.contains("E")) "$title $sub" else title)
+        Toast.makeText(this, "Added to exports - you can keep watching", Toast.LENGTH_SHORT).show()
+    }
+
     // ---- Window / PiP ---------------------------------------------------------------
 
     private fun hideSystemBars() {
@@ -378,5 +486,7 @@ class PlayerActivity : ComponentActivity() {
         const val EXTRA_URI = "uri"
         const val EXTRA_TITLE = "title"
         const val EXTRA_FROM_START = "from_start"
+        const val EXTRA_NO_MEMC = "no_memc"
+        const val EXTRA_START_MS = "start_ms"
     }
 }

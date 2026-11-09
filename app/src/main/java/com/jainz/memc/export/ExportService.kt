@@ -1,0 +1,309 @@
+package com.jainz.memc.export
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.os.Environment
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.PowerManager
+import android.provider.MediaStore
+import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.util.Clock
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSourceBitmapLoader
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.DefaultAssetLoaderFactory
+import androidx.media3.transformer.DefaultDecoderFactory
+import androidx.media3.transformer.DefaultEncoderFactory
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.Effects
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.ProgressHolder
+import androidx.media3.transformer.Transformer
+import com.jainz.memc.MainActivity
+import com.jainz.memc.MemcApp
+import com.jainz.memc.R
+import com.jainz.memc.memc.MemcControl
+import com.jainz.memc.memc.MemcEffect
+import com.jainz.memc.player.RoutingDataSource
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+
+/**
+ * Renders videos to new 60 fps files in the background:
+ * decode (phone hardware) -> MEMC effect on the GPU -> HEVC encode (hardware) -> MP4.
+ * HDR10 sources stay HDR10 (10-bit HEVC). Finished files go to Movies/MEMC Player, where
+ * the library scan picks them up as another version of the same movie.
+ */
+@UnstableApi
+class ExportService : Service() {
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var transformer: Transformer? = null
+    private var currentId: Long = -1
+    private var withoutAudio = false
+    private var tempFile: File? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+    private val progress = ProgressHolder()
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        goForeground("Preparing export…", -1)
+        if (intent?.action == ACTION_CANCEL) {
+            cancelCurrent()
+        } else if (transformer == null) {
+            startNext()
+        }
+        return START_NOT_STICKY
+    }
+
+    // ---- Queue ----------------------------------------------------------------------------
+
+    private fun startNext() {
+        val job = ExportManager.nextQueued()
+        if (job == null) {
+            releaseWakeLock()
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+        currentId = job.id
+        withoutAudio = false
+        ExportManager.update(job.id) { it.copy(status = ExportStatus.RUNNING, progress = 0, message = null) }
+        acquireWakeLock()
+        begin(job)
+    }
+
+    private fun begin(job: ExportJob) {
+        val dir = getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: cacheDir
+        val out = File(dir, "export-${job.id}.mp4").also { it.delete() }
+        tempFile = out
+
+        val g = MemcApp.graph
+        // Export always uses the best quality setting: there is no real-time deadline here.
+        val effect = MemcEffect(MemcControl(enabled = true, targetFps = 60, quality = 2))
+        val mediaSources = DefaultMediaSourceFactory(RoutingDataSource.Factory(this, g.smb))
+        val assetLoader = DefaultAssetLoaderFactory(
+            this,
+            DefaultDecoderFactory.Builder(this).build(),
+            Clock.DEFAULT,
+            mediaSources,
+            DataSourceBitmapLoader(this),
+        )
+        val t = Transformer.Builder(this)
+            .setVideoMimeType(MimeTypes.VIDEO_H265)
+            .setEncoderFactory(DefaultEncoderFactory.Builder(this).setEnableFallback(true).build())
+            .setAssetLoaderFactory(assetLoader)
+            .addListener(object : Transformer.Listener {
+                override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                    onFinished(job, out)
+                }
+
+                override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
+                    onFailed(job, exportException)
+                }
+            })
+            .build()
+
+        val item = EditedMediaItem.Builder(MediaItem.fromUri(job.sourceUri))
+            .setRemoveAudio(withoutAudio)
+            .setEffects(Effects(emptyList(), listOf(effect)))
+            .build()
+        transformer = t
+        try {
+            t.start(item, out.absolutePath)
+        } catch (e: Exception) {
+            transformer = null
+            ExportManager.update(job.id) { it.copy(status = ExportStatus.FAILED, message = e.message ?: "Could not start") }
+            handler.post { startNext() }
+            return
+        }
+        pollProgress()
+    }
+
+    private fun pollProgress() {
+        handler.postDelayed(object : Runnable {
+            override fun run() {
+                val t = transformer ?: return
+                if (t.getProgress(progress) == Transformer.PROGRESS_STATE_AVAILABLE) {
+                    val p = progress.progress
+                    ExportManager.update(currentId) { it.copy(progress = p) }
+                    val title = ExportManager.get(currentId)?.title ?: "video"
+                    goForeground("Exporting $title at 60 fps", p)
+                }
+                handler.postDelayed(this, 1000)
+            }
+        }, 1000)
+    }
+
+    private fun onFinished(job: ExportJob, out: File) {
+        transformer = null
+        handler.removeCallbacksAndMessages(null)
+        ExportManager.update(job.id) { it.copy(progress = 100, message = "Saving to Movies…") }
+        MemcApp.graph.scope.launch {
+            val result = runCatching { publish(out, job.title) }
+            withContext(Dispatchers.Main) {
+                result.onSuccess { uri ->
+                    ExportManager.update(job.id) {
+                        it.copy(
+                            status = ExportStatus.DONE,
+                            outputUri = uri,
+                            message = if (withoutAudio) {
+                                "Saved without sound - this file's audio (e.g. DTS/TrueHD) can't be re-encoded on the phone"
+                            } else {
+                                "Saved to Movies/MEMC Player"
+                            },
+                        )
+                    }
+                    notifyDone(job.title, ok = true)
+                }.onFailure { e ->
+                    ExportManager.update(job.id) { it.copy(status = ExportStatus.FAILED, message = "Saving failed: ${e.message}") }
+                    notifyDone(job.title, ok = false)
+                }
+                startNext()
+            }
+        }
+    }
+
+    private fun onFailed(job: ExportJob, e: ExportException) {
+        transformer = null
+        handler.removeCallbacksAndMessages(null)
+        tempFile?.delete()
+        if (!withoutAudio && ExportManager.get(job.id)?.status == ExportStatus.RUNNING) {
+            // Most failures on phones come from audio the hardware can't re-encode (DTS, TrueHD).
+            // Try once more with the video only.
+            withoutAudio = true
+            ExportManager.update(job.id) { it.copy(progress = 0, message = "Retrying without sound…") }
+            begin(job)
+            return
+        }
+        ExportManager.update(job.id) {
+            it.copy(status = ExportStatus.FAILED, message = "${e.errorCodeName}: ${e.message ?: "export failed"}")
+        }
+        notifyDone(job.title, ok = false)
+        startNext()
+    }
+
+    private fun cancelCurrent() {
+        val t = transformer ?: return
+        transformer = null
+        handler.removeCallbacksAndMessages(null)
+        runCatching { t.cancel() }
+        tempFile?.delete()
+        ExportManager.update(currentId) { it.copy(status = ExportStatus.CANCELLED, message = null) }
+        startNext()
+    }
+
+    // ---- Saving -------------------------------------------------------------------------------
+
+    /** Copies the finished file into Movies/MEMC Player and returns its content:// address. */
+    private suspend fun publish(file: File, title: String): String = withContext(Dispatchers.IO) {
+        val safe = title.replace(Regex("""[\\/:*?"<>|]"""), " ").trim().ifBlank { "Video" }
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, "$safe 60fps.mp4")
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/MEMC Player")
+            put(MediaStore.Video.Media.IS_PENDING, 1)
+        }
+        val resolver = contentResolver
+        val uri = resolver.insert(MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values)
+            ?: error("Android refused to create the file")
+        try {
+            resolver.openOutputStream(uri)!!.use { output -> file.inputStream().use { it.copyTo(output, 1 shl 20) } }
+            resolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
+        } catch (e: Exception) {
+            resolver.delete(uri, null, null)
+            throw e
+        } finally {
+            file.delete()
+        }
+        uri.toString()
+    }
+
+    // ---- Notifications ----------------------------------------------------------------------------
+
+    private fun channel(): String {
+        val nm = getSystemService(NotificationManager::class.java)
+        if (nm.getNotificationChannel(CHANNEL) == null) {
+            nm.createNotificationChannel(NotificationChannel(CHANNEL, "Exports", NotificationManager.IMPORTANCE_LOW))
+        }
+        return CHANNEL
+    }
+
+    private fun openAppIntent(): PendingIntent = PendingIntent.getActivity(
+        this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+        PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    private fun goForeground(text: String, percent: Int) {
+        val n = NotificationCompat.Builder(this, channel())
+            .setSmallIcon(R.drawable.ic_stat_memc)
+            .setContentTitle("MEMC Player")
+            .setContentText(text)
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .setContentIntent(openAppIntent())
+            .setProgress(100, percent.coerceAtLeast(0), percent < 0)
+            .build()
+        val type = when {
+            Build.VERSION.SDK_INT >= 35 -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
+            else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        }
+        ServiceCompat.startForeground(this, NOTIFICATION_ID, n, type)
+    }
+
+    private fun notifyDone(title: String, ok: Boolean) {
+        val n = NotificationCompat.Builder(this, channel())
+            .setSmallIcon(R.drawable.ic_stat_memc)
+            .setContentTitle(if (ok) "Export finished" else "Export failed")
+            .setContentText(if (ok) "$title - 60 fps copy saved to Movies/MEMC Player" else "$title - open the app for details")
+            .setAutoCancel(true)
+            .setContentIntent(openAppIntent())
+            .build()
+        runCatching { getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID + 1 + (title.hashCode() and 0xffff), n) }
+    }
+
+    // ---- Keep the CPU awake while the screen is off ------------------------------------------------
+
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "memc:export")
+            .apply { acquire(6 * 60 * 60 * 1000L) }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.takeIf { it.isHeld }?.release()
+        wakeLock = null
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        transformer?.let { runCatching { it.cancel() } }
+        transformer = null
+        releaseWakeLock()
+        super.onDestroy()
+    }
+
+    companion object {
+        const val ACTION_CANCEL = "com.jainz.memc.export.CANCEL"
+        private const val CHANNEL = "exports"
+        private const val NOTIFICATION_ID = 4242
+    }
+}

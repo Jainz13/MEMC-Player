@@ -58,6 +58,7 @@ import com.jainz.memc.ui.components.BackdropHeader
 import com.jainz.memc.ui.components.CardShape
 import com.jainz.memc.ui.components.CastShelf
 import com.jainz.memc.ui.components.FixMatchDialog
+import com.jainz.memc.ui.components.rememberExportAction
 import com.jainz.memc.ui.components.ProgressStrip
 import com.jainz.memc.ui.components.SectionTitle
 import com.jainz.memc.ui.components.TechBadges
@@ -73,6 +74,7 @@ fun MovieDetailScreen(nav: NavController, tmdbId: Long) {
     val files by remember(tmdbId) { g.db.videos().forMovie(tmdbId) }.collectAsStateWithLifecycle(emptyList())
     var menu by remember { mutableStateOf(false) }
     var fixing by remember { mutableStateOf(false) }
+    val export = rememberExportAction()
 
     val m = movie
     val primary = files.firstOrNull()?.video
@@ -203,6 +205,16 @@ fun MovieDetailScreen(nav: NavController, tmdbId: Long) {
                             onClick = {
                                 menu = false
                                 scope.launch { g.db.videos().setWatched(primary.id, !primary.watched) }
+                            },
+                        )
+                    }
+                    if (primary != null) {
+                        DropdownMenuItem(
+                            text = { Text("Export at 60 fps") },
+                            onClick = {
+                                menu = false
+                                val name = listOfNotNull(m?.title ?: primary.parsedTitle, m?.year?.let { "($it)" }).joinToString(" ")
+                                export(primary.uri, name)
                             },
                         )
                     }
