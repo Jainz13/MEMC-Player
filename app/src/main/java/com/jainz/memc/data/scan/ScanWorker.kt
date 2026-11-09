@@ -26,9 +26,15 @@ class ScanWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         if (!onlyScrape) {
             if (g.settings.indexDevice.value) {
                 setProgress(workDataOf(KEY_STAGE to "Scanning this phone"))
-                runCatching { scanner.scanDevice() }
+                val info = try {
+                    scanner.scanDevice()
+                } catch (e: Exception) {
+                    "Phone scan failed: ${e.message ?: e.javaClass.simpleName}"
+                }
+                g.settings.deviceScanInfo.set(info)
             } else {
                 scanner.clearDevice()
+                g.settings.deviceScanInfo.set("Phone videos are turned off in Settings")
             }
             for (src in g.db.sources().all().filter { it.indexed }) {
                 setProgress(workDataOf(KEY_STAGE to "Scanning ${src.name}"))

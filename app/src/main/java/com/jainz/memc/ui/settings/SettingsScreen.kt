@@ -47,6 +47,7 @@ import com.jainz.memc.data.scan.ScanWorker
 import com.jainz.memc.data.tmdb.Tmdb
 import com.jainz.memc.player.DeviceCaps
 import com.jainz.memc.ui.components.SectionTitle
+import com.jainz.memc.ui.components.StorageAccessCard
 import com.jainz.memc.ui.theme.Palette
 import kotlinx.coroutines.launch
 
@@ -72,6 +73,14 @@ fun SettingsScreen(nav: NavController) {
     val autoNext by st.autoPlayNext.flow.collectAsStateWithLifecycle()
     val seekStep by st.seekStepSec.flow.collectAsStateWithLifecycle()
     val subScale by st.subtitleScale.flow.collectAsStateWithLifecycle()
+    val zoom by st.defaultZoom.flow.collectAsStateWithLifecycle()
+    val matchFps by st.matchFrameRate.flow.collectAsStateWithLifecycle()
+    val audioLang by st.audioLanguage.flow.collectAsStateWithLifecycle()
+    val ffmpegAudio by st.ffmpegAudio.flow.collectAsStateWithLifecycle()
+    val subsOn by st.subtitlesOn.flow.collectAsStateWithLifecycle()
+    val subLang by st.subtitleLanguage.flow.collectAsStateWithLifecycle()
+    val memcFps by st.memcTargetFps.flow.collectAsStateWithLifecycle()
+    val memcQuality by st.memcQuality.flow.collectAsStateWithLifecycle()
     val caps = remember { DeviceCaps.read(context) }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
@@ -149,6 +158,7 @@ fun SettingsScreen(nav: NavController) {
 
         // ---- Library ----
         item { SectionTitle("Library", Modifier.padding(top = 12.dp)) }
+        item { StorageAccessCard() }
         item {
             Card {
                 ToggleRow("Include videos on this phone", "Camera, WhatsApp and screen recordings are never matched", indexDevice) {
@@ -184,6 +194,87 @@ fun SettingsScreen(nav: NavController) {
                         FilterChip(selected = seekStep == s, onClick = { st.seekStepSec.set(s) }, label = { Text("${s}s") })
                     }
                 }
+            }
+        }
+
+        // ---- Video ----
+        item { SectionTitle("Video", Modifier.padding(top = 12.dp)) }
+        item {
+            Card {
+                Text("Default zoom", style = MaterialTheme.typography.bodyMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(0 to "Fit", 1 to "Crop to fill", 2 to "Stretch").forEach { (v, label) ->
+                        FilterChip(selected = zoom == v, onClick = { st.defaultZoom.set(v) }, label = { Text(label) })
+                    }
+                }
+                ToggleRow(
+                    "Match display to video frame rate",
+                    "Switches the 120 Hz screen to a multiple of 24/25/30 fps so motion doesn't judder",
+                    matchFps,
+                ) { st.matchFrameRate.set(it) }
+                Text(
+                    "Video is always decoded by the phone's hardware (HEVC, AV1, VP9, H.264) and HDR10/HDR10+ goes straight to the display.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Palette.TextFaint,
+                )
+            }
+        }
+
+        // ---- Smooth motion (MEMC) ----
+        item { SectionTitle("Smooth motion (MEMC)", Modifier.padding(top = 12.dp)) }
+        item {
+            Card {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Frame interpolation", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Arrives with the MEMC engine update. The choices below are saved and used from then on.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Palette.TextDim,
+                        )
+                    }
+                    Switch(checked = false, onCheckedChange = null, enabled = false)
+                }
+                Text("Target frame rate", style = MaterialTheme.typography.bodyMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(60, 120).forEach { fps ->
+                        FilterChip(selected = memcFps == fps, onClick = { st.memcTargetFps.set(fps) }, label = { Text("$fps fps") })
+                    }
+                }
+                Text("Quality", style = MaterialTheme.typography.bodyMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(0 to "Battery saver", 1 to "Balanced", 2 to "Best").forEach { (v, label) ->
+                        FilterChip(selected = memcQuality == v, onClick = { st.memcQuality.set(v) }, label = { Text(label) })
+                    }
+                }
+            }
+        }
+
+        // ---- Audio ----
+        item { SectionTitle("Audio", Modifier.padding(top = 12.dp)) }
+        item {
+            Card {
+                Text("Preferred audio language", style = MaterialTheme.typography.bodyMedium)
+                LanguageChips(audioLang, "Original") { st.audioLanguage.set(it) }
+                ToggleRow(
+                    "Always use FFmpeg for audio",
+                    "Normally used only for DTS/TrueHD. Turn on if a track plays silent or out of sync.",
+                    ffmpegAudio,
+                ) { st.ffmpegAudio.set(it) }
+            }
+        }
+
+        // ---- Subtitles ----
+        item { SectionTitle("Subtitles", Modifier.padding(top = 12.dp)) }
+        item {
+            Card {
+                ToggleRow(
+                    "Show subtitles by default",
+                    "When off, only forced subtitles (translated signs and foreign lines) appear",
+                    subsOn,
+                ) { st.subtitlesOn.set(it) }
+                Text("Preferred subtitle language", style = MaterialTheme.typography.bodyMedium)
+                LanguageChips(subLang, "Phone language") { st.subtitleLanguage.set(it) }
                 Text("Subtitle size: $subScale%", style = MaterialTheme.typography.bodyMedium)
                 Slider(
                     value = subScale.toFloat(),
@@ -214,6 +305,22 @@ fun SettingsScreen(nav: NavController) {
                 InfoLine("Version", BuildConfig.VERSION_NAME)
                 Text(Tmdb.ATTRIBUTION, style = MaterialTheme.typography.bodySmall, color = Palette.TextFaint)
             }
+        }
+    }
+}
+
+private val TRACK_LANGUAGES = listOf(
+    "en" to "English", "ar" to "Arabic", "hi" to "Hindi", "ml" to "Malayalam",
+    "ta" to "Tamil", "te" to "Telugu", "ja" to "Japanese", "ko" to "Korean",
+    "es" to "Spanish", "fr" to "French",
+)
+
+@Composable
+private fun LanguageChips(selected: String, defaultLabel: String, onPick: (String) -> Unit) {
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        item { FilterChip(selected = selected.isBlank(), onClick = { onPick("") }, label = { Text(defaultLabel) }) }
+        items(TRACK_LANGUAGES) { (code, label) ->
+            FilterChip(selected = selected == code, onClick = { onPick(code) }, label = { Text(label) })
         }
     }
 }

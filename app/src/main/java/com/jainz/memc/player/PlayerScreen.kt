@@ -14,6 +14,14 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -86,7 +94,13 @@ import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private enum class PlayerDialog { AUDIO, SUBTITLES, SPEED, INFO }
+private enum class PanelTab(val label: String) { AUDIO("Audio"), SUBTITLES("Subtitles"), VIDEO("Video") }
+
+private fun zoomToMode(zoom: Int) = when (zoom) {
+    1 -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+    2 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+}
 
 @UnstableApi
 @Composable
@@ -96,6 +110,8 @@ fun PlayerScreen(
     resumedAt: Long?,
     seekStepMs: Long,
     subtitleScale: Float,
+    defaultZoom: Int,
+    onSubtitleScaleChange: (Float) -> Unit,
     onStartOver: () -> Unit,
     onDismissResume: () -> Unit,
     onBack: () -> Unit,
@@ -109,8 +125,9 @@ fun PlayerScreen(
     var controls by remember { mutableStateOf(true) }
     var interaction by remember { mutableIntStateOf(0) }
     var locked by remember { mutableStateOf(false) }
-    var resizeMode by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
-    var dialog by remember { mutableStateOf<PlayerDialog?>(null) }
+    var resizeMode by remember { mutableIntStateOf(zoomToMode(defaultZoom)) }
+    var panel by remember { mutableStateOf<PanelTab?>(null) }
+    var subScale by remember { mutableFloatStateOf(subtitleScale) }
     var label by remember { mutableStateOf<String?>(null) }
     var labelToken by remember { mutableIntStateOf(0) }
     var dragging by remember { mutableStateOf(false) }
@@ -134,8 +151,8 @@ fun PlayerScreen(
         }
     }
     // Auto-hide controls while playing.
-    LaunchedEffect(controls, state.isPlaying, interaction, dialog) {
-        if (controls && state.isPlaying && dialog == null) {
+    LaunchedEffect(controls, state.isPlaying, interaction, panel) {
+        if (controls && state.isPlaying && panel == null) {
             delay(4_000)
             controls = false
         }
@@ -190,7 +207,7 @@ fun PlayerScreen(
                             CaptionStyleCompat.EDGE_TYPE_OUTLINE, AColor.BLACK, null,
                         )
                     )
-                    setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * subtitleScale)
+                    setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * subScale)
                     setBottomPaddingFraction(if (controls && !inPip) 0.16f else 0.06f)
                 }
             },
@@ -342,18 +359,9 @@ fun PlayerScreen(
                             Text(it, style = MaterialTheme.typography.bodySmall, color = Color(0xCCFFFFFF), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
-                    BarIcon(Icons.Filled.Audiotrack, "Audio") { dialog = PlayerDialog.AUDIO }
-                    BarIcon(Icons.Filled.ClosedCaption, "Subtitles") { dialog = PlayerDialog.SUBTITLES }
-                    BarIcon(Icons.Filled.Speed, "Speed") { dialog = PlayerDialog.SPEED }
-                    BarIcon(Icons.Filled.AspectRatio, "Aspect ratio") {
-                        resizeMode = when (resizeMode) {
-                            AspectRatioFrameLayout.RESIZE_MODE_FIT -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM.also { flash("Crop to fill") }
-                            AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_FILL.also { flash("Stretch") }
-                            else -> AspectRatioFrameLayout.RESIZE_MODE_FIT.also { flash("Fit to screen") }
-                        }
-                        poke()
-                    }
-                    BarIcon(Icons.Filled.Info, "Video info") { dialog = PlayerDialog.INFO }
+                    BarIcon(Icons.Filled.ClosedCaption, "Subtitles") { panel = PanelTab.SUBTITLES }
+                    BarIcon(Icons.Filled.Audiotrack, "Audio") { panel = PanelTab.AUDIO }
+                    BarIcon(Icons.Filled.Tune, "Video settings") { panel = PanelTab.VIDEO }
                     BarIcon(Icons.Filled.PictureInPictureAlt, "Picture in picture", onPip)
                 }
 
@@ -462,6 +470,64 @@ fun PlayerScreen(
             }
         }
 
+        // ---- Settings panel (Audio / Subtitles / Video) ----
+        val openTab = panel
+        if (openTab != null && !inPip) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color(0x66000000))
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { panel = null }
+            )
+            Column(
+                Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .width(400.dp)
+                    .background(Color(0xF2121418), RoundedCornerShape(topStart = 20.dp, bottomStart = 20.dp))
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
+                    .displayCutoutPadding()
+                    .padding(top = 12.dp, start = 16.dp, end = 16.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    PanelTab.entries.forEach { t ->
+                        FilterChip(
+                            selected = t == openTab,
+                            onClick = { panel = t },
+                            label = { Text(t.label) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Palette.AccentDim,
+                                selectedLabelColor = Palette.Accent,
+                                labelColor = Color.White,
+                            ),
+                            modifier = Modifier.padding(end = 8.dp),
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    BarIcon(Icons.Filled.Close, "Close") { panel = null }
+                }
+                LazyColumn(Modifier.weight(1f).padding(top = 8.dp)) {
+                    when (openTab) {
+                        PanelTab.AUDIO -> item { AudioTab(state) }
+                        PanelTab.SUBTITLES -> item {
+                            SubtitlesTab(state, subScale) {
+                                subScale = it
+                                onSubtitleScaleChange(it)
+                            }
+                        }
+                        PanelTab.VIDEO -> item {
+                            VideoTab(
+                                state,
+                                resizeMode = resizeMode,
+                                onResize = { resizeMode = it },
+                            )
+                        }
+                    }
+                    item { Spacer(Modifier.height(24.dp)) }
+                }
+            }
+        }
+
         state.error?.let { err ->
             Column(
                 Modifier
@@ -481,13 +547,6 @@ fun PlayerScreen(
         }
     }
 
-    when (dialog) {
-        PlayerDialog.AUDIO -> TrackDialog(state, C.TRACK_TYPE_AUDIO) { dialog = null }
-        PlayerDialog.SUBTITLES -> TrackDialog(state, C.TRACK_TYPE_TEXT) { dialog = null }
-        PlayerDialog.SPEED -> SpeedDialog(state) { dialog = null }
-        PlayerDialog.INFO -> InfoDialog(state) { dialog = null }
-        null -> Unit
-    }
 }
 
 @Composable
@@ -514,121 +573,176 @@ private fun RoundButton(
     }
 }
 
+// ---- Panel tabs -------------------------------------------------------------------
+
+@Composable
+private fun PanelHeading(text: String) {
+    Text(
+        text.uppercase(),
+        style = MaterialTheme.typography.labelSmall,
+        color = Palette.TextFaint,
+        modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
+    )
+}
+
 @UnstableApi
 @Composable
-private fun TrackDialog(state: PlayerState, type: Int, onDismiss: () -> Unit) {
+private fun TrackList(state: PlayerState, type: Int) {
     val player = state.player
     val groups = state.tracks.groups.filter { it.type == type }
     val textDisabled = player.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
     val anySelected = groups.any { it.isSelected }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
-        title = { Text(if (type == C.TRACK_TYPE_AUDIO) "Audio" else "Subtitles") },
-        text = {
-            LazyColumn(Modifier.heightIn(max = 380.dp)) {
-                if (type == C.TRACK_TYPE_TEXT) {
-                    item {
-                        TrackRow("Off", null, selected = textDisabled || !anySelected, supported = true) {
-                            player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                                .build()
-                            onDismiss()
-                        }
-                    }
-                }
-                groups.forEach { group ->
-                    for (i in 0 until group.length) {
-                        val f = group.getTrackFormat(i)
-                        val forced = (f.selectionFlags and C.SELECTION_FLAG_FORCED) != 0
-                        val detail = listOfNotNull(
-                            PlayerState.codecName(f.sampleMimeType),
-                            PlayerState.channels(f.channelCount),
-                            if (forced) "Forced" else null,
-                        ).joinToString(" · ")
-                        item {
-                            TrackRow(
-                                PlayerState.language(f),
-                                detail,
-                                selected = group.isTrackSelected(i) && !(type == C.TRACK_TYPE_TEXT && textDisabled),
-                                supported = group.isTrackSupported(i, /* allowExceedsCapabilities = */ true),
-                            ) {
-                                player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-                                    .setTrackTypeDisabled(type, false)
-                                    .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, i))
-                                    .build()
-                                onDismiss()
-                            }
-                        }
-                    }
-                }
-                if (groups.isEmpty()) {
-                    item { Text("No tracks in this file.", color = Palette.TextDim) }
-                }
+    Column {
+        if (type == C.TRACK_TYPE_TEXT) {
+            TrackRow("Off", null, selected = textDisabled || !anySelected, supported = true) {
+                player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                    .build()
             }
-        },
-    )
-}
-
-@Composable
-private fun TrackRow(title: String, detail: String?, selected: Boolean, supported: Boolean, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().clickable(enabled = supported, onClick = onClick).padding(vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(28.dp)) {
-            if (selected) Icon(Icons.Filled.Check, null, tint = Palette.Accent)
         }
-        Column(Modifier.weight(1f)) {
-            Text(title, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, color = if (supported) Color.Unspecified else Palette.TextFaint)
-            if (!detail.isNullOrBlank()) {
-                Text(
-                    detail + if (!supported) " · not supported" else "",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Palette.TextDim,
-                )
+        groups.forEach { group ->
+            for (i in 0 until group.length) {
+                val f = group.getTrackFormat(i)
+                val forced = (f.selectionFlags and C.SELECTION_FLAG_FORCED) != 0
+                val detail = listOfNotNull(
+                    PlayerState.codecName(f.sampleMimeType),
+                    PlayerState.channels(f.channelCount),
+                    if (forced) "Forced" else null,
+                ).joinToString(" · ")
+                TrackRow(
+                    PlayerState.language(f),
+                    detail,
+                    selected = group.isTrackSelected(i) && !(type == C.TRACK_TYPE_TEXT && textDisabled),
+                    supported = group.isTrackSupported(i, /* allowExceedsCapabilities = */ true),
+                ) {
+                    player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(type, false)
+                        .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, i))
+                        .build()
+                }
             }
+        }
+        if (groups.isEmpty()) {
+            Text(
+                if (type == C.TRACK_TYPE_TEXT) "This video has no subtitle tracks." else "No audio tracks found.",
+                color = Palette.TextDim,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(vertical = 8.dp),
+            )
         }
     }
 }
 
 @UnstableApi
 @Composable
-private fun SpeedDialog(state: PlayerState, onDismiss: () -> Unit) {
-    val speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
-        title = { Text("Playback speed") },
-        text = {
-            Column {
-                speeds.forEach { s ->
-                    TrackRow(if (s == 1f) "Normal" else "${s}×", null, selected = state.speed == s, supported = true) {
-                        state.player.setPlaybackSpeed(s)
-                        onDismiss()
-                    }
-                }
-            }
-        },
-    )
+private fun AudioTab(state: PlayerState) {
+    Column {
+        PanelHeading("Audio track")
+        TrackList(state, C.TRACK_TYPE_AUDIO)
+        state.audioDecoder?.let { ad ->
+            PanelHeading("Decoder")
+            Text(
+                ad + if (ad.contains("ffmpeg", true)) "  (FFmpeg)" else "  (phone)",
+                style = MaterialTheme.typography.bodySmall,
+                color = Palette.TextDim,
+            )
+        }
+        Text(
+            "Default audio language and the FFmpeg option are in Settings → Audio.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Palette.TextFaint,
+            modifier = Modifier.padding(top = 12.dp),
+        )
+    }
 }
 
 @UnstableApi
 @Composable
-private fun InfoDialog(state: PlayerState, onDismiss: () -> Unit) {
+private fun SubtitlesTab(state: PlayerState, scale: Float, onScale: (Float) -> Unit) {
+    Column {
+        PanelHeading("Subtitle track")
+        TrackList(state, C.TRACK_TYPE_TEXT)
+        PanelHeading("Size  ${(scale * 100).roundToInt()}%")
+        Slider(
+            value = scale,
+            onValueChange = { onScale((it * 10).roundToInt() / 10f) },
+            valueRange = 0.6f..2f,
+            colors = SliderDefaults.colors(thumbColor = Palette.Accent, activeTrackColor = Palette.Accent),
+        )
+        Text(
+            "Subtitle files named like the video (Movie.srt, Movie.en.srt, Movie.ass) in the same folder load automatically.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Palette.TextFaint,
+        )
+    }
+}
+
+@UnstableApi
+@Composable
+private fun VideoTab(state: PlayerState, resizeMode: Int, onResize: (Int) -> Unit) {
+    val player = state.player
+    Column {
+        PanelHeading("Zoom")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(
+                AspectRatioFrameLayout.RESIZE_MODE_FIT to "Fit",
+                AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "Crop",
+                AspectRatioFrameLayout.RESIZE_MODE_FILL to "Stretch",
+            ).forEach { (mode, name) ->
+                FilterChip(selected = resizeMode == mode, onClick = { onResize(mode) }, label = { Text(name) })
+            }
+        }
+
+        PanelHeading("Speed")
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f).forEach { sp ->
+                FilterChip(
+                    selected = state.speed == sp,
+                    onClick = { player.setPlaybackSpeed(sp) },
+                    label = { Text(if (sp == 1f) "1×" else "$sp×") },
+                )
+            }
+        }
+
+        PanelHeading("Smooth motion (MEMC)")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Frame interpolation", style = MaterialTheme.typography.bodyMedium, color = Palette.TextDim)
+                Text(
+                    "Real-time 60/120 fps on the S24 Ultra's NPU arrives with the MEMC engine update. " +
+                        "Its defaults are already in Settings → Smooth motion.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Palette.TextFaint,
+                )
+            }
+            Switch(checked = false, onCheckedChange = null, enabled = false)
+        }
+
+        PanelHeading("Now playing")
+        playbackInfo(state).forEach { (k, value) ->
+            Row(Modifier.padding(vertical = 3.dp)) {
+                Text(k, style = MaterialTheme.typography.bodySmall, color = Palette.TextFaint, modifier = Modifier.width(110.dp))
+                Text(value, style = MaterialTheme.typography.bodySmall, color = Color.White)
+            }
+        }
+    }
+}
+
+@UnstableApi
+private fun playbackInfo(state: PlayerState): List<Pair<String, String>> {
     val v = state.videoFormat
     val a = state.audioFormat
     val vd = state.videoDecoder
     val ad = state.audioDecoder
-    val lines = buildList {
+    return buildList {
         if (v != null) {
             add("Video" to listOfNotNull(
                 PlayerState.codecName(v.sampleMimeType),
                 if (v.width > 0) "${v.width}×${v.height}" else null,
                 if (v.frameRate > 0) String.format(java.util.Locale.US, "%.3f fps", v.frameRate) else null,
-                PlayerState.hdrLabel(v),
             ).joinToString(" · "))
+            add("HDR" to (PlayerState.hdrLabel(v) ?: "SDR"))
         }
         if (vd != null) {
             val hw = vd.startsWith("c2.qti") || vd.startsWith("OMX.qcom") || vd.startsWith("c2.exynos") || vd.contains("hw", true)
@@ -641,22 +755,33 @@ private fun InfoDialog(state: PlayerState, onDismiss: () -> Unit) {
                 if (a.sampleRate > 0) "${a.sampleRate / 1000.0} kHz" else null,
             ).joinToString(" · "))
         }
-        if (ad != null) add("Audio decoder" to ad + if (ad.contains("ffmpeg", true)) "  (FFmpeg)" else "")
-        add("Buffered ahead" to "${((state.buffered - state.position).coerceAtLeast(0) / 1000)} s")
+        if (ad != null) add("Audio decoder" to ad)
+        add("Buffered" to "${((state.buffered - state.position).coerceAtLeast(0) / 1000)} s ahead")
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-        title = { Text("Playback info") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                lines.forEach { (k, value) ->
-                    Column {
-                        Text(k, style = MaterialTheme.typography.labelSmall, color = Palette.TextFaint)
-                        Text(value, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
+}
+
+@Composable
+private fun TrackRow(title: String, detail: String?, selected: Boolean, supported: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(enabled = supported, onClick = onClick).padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(28.dp)) {
+            if (selected) Icon(Icons.Filled.Check, null, tint = Palette.Accent)
+        }
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (supported) Color.White else Palette.TextFaint,
+            )
+            if (!detail.isNullOrBlank()) {
+                Text(
+                    detail + if (!supported) " · not supported" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Palette.TextDim,
+                )
             }
-        },
-    )
+        }
+    }
 }

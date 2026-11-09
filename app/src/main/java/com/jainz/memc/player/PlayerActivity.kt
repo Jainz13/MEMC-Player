@@ -59,7 +59,7 @@ class PlayerActivity : ComponentActivity() {
         }
         hideSystemBars()
 
-        player = PlayerFactory.create(this, g.smb)
+        player = PlayerFactory.create(this, g.smb, g.settings)
         state = PlayerState(player)
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -116,6 +116,8 @@ class PlayerActivity : ComponentActivity() {
                     resumedAt = resumeNotice,
                     seekStepMs = g.settings.seekStepSec.value * 1000L,
                     subtitleScale = g.settings.subtitleScale.value / 100f,
+                    defaultZoom = g.settings.defaultZoom.value,
+                    onSubtitleScaleChange = { g.settings.subtitleScale.set((it * 100).toInt()) },
                     onStartOver = {
                         player.seekTo(0)
                         resumeNotice = null
@@ -192,7 +194,11 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun buildItem(uri: String, title: String, subtitle: String?, id: Long?): MediaItem {
-        val subs = if (uri.startsWith("smb://")) sideSubtitlesSmb(uri) else emptyList()
+        val subs = when {
+            uri.startsWith("smb://") -> sideSubtitlesSmb(uri)
+            uri.startsWith("file://") -> sideSubtitlesLocal(uri)
+            else -> emptyList()
+        }
         return MediaItem.Builder()
             .setUri(uri)
             .setMediaId(id?.toString() ?: uri)
@@ -209,27 +215,42 @@ class PlayerActivity : ComponentActivity() {
         g.smb.list(loc.copy(path = dir))
             .filter { !it.isDir && NameParser.isSubtitle(it.name) && it.name.startsWith(base, ignoreCase = true) }
             .map { e ->
-                val ext = NameParser.extension(e.name)
-                val middle = e.name.substring(base.length).removeSuffix(".$ext").trim('.', ' ', '_', '-')
                 val subUri = Uri.parse(uri).buildUpon().path(null).apply {
                     appendPath(loc.share)
                     e.path.split('/').filter { it.isNotEmpty() }.forEach { appendPath(it) }
                 }.build()
-                MediaItem.SubtitleConfiguration.Builder(subUri)
-                    .setMimeType(
-                        when (ext) {
-                            "ass", "ssa" -> MimeTypes.TEXT_SSA
-                            "vtt" -> MimeTypes.TEXT_VTT
-                            "ttml" -> MimeTypes.APPLICATION_TTML
-                            else -> MimeTypes.APPLICATION_SUBRIP
-                        }
-                    )
-                    .setLanguage(middle.substringBefore('.').lowercase().takeIf { it.length in 2..3 })
-                    .setLabel(middle.ifBlank { "External" })
-                    .build()
+                subtitleConfig(subUri, e.name, base)
             }
     } catch (e: Exception) {
         emptyList()
+    }
+
+    /** Same for videos on the phone (needs "All files" access to see non-media files). */
+    private fun sideSubtitlesLocal(uri: String): List<MediaItem.SubtitleConfiguration> = try {
+        val file = java.io.File(Uri.parse(uri).path ?: "")
+        val base = file.nameWithoutExtension
+        (file.parentFile?.listFiles() ?: emptyArray())
+            .filter { it.isFile && NameParser.isSubtitle(it.name) && it.name.startsWith(base, ignoreCase = true) }
+            .map { subtitleConfig(Uri.fromFile(it), it.name, base) }
+    } catch (e: Exception) {
+        emptyList()
+    }
+
+    private fun subtitleConfig(subUri: Uri, name: String, base: String): MediaItem.SubtitleConfiguration {
+        val ext = NameParser.extension(name)
+        val middle = name.substring(base.length).removeSuffix(".$ext").trim('.', ' ', '_', '-')
+        return MediaItem.SubtitleConfiguration.Builder(subUri)
+            .setMimeType(
+                when (ext) {
+                    "ass", "ssa" -> MimeTypes.TEXT_SSA
+                    "vtt" -> MimeTypes.TEXT_VTT
+                    "ttml" -> MimeTypes.APPLICATION_TTML
+                    else -> MimeTypes.APPLICATION_SUBRIP
+                }
+            )
+            .setLanguage(middle.substringBefore('.').lowercase().takeIf { it.length in 2..3 })
+            .setLabel(middle.ifBlank { "External" })
+            .build()
     }
 
     private fun titleFromUri(uri: String): String =

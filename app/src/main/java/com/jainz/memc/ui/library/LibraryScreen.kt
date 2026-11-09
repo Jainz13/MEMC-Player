@@ -1,7 +1,5 @@
 package com.jainz.memc.ui.library
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -78,6 +76,7 @@ import com.jainz.memc.ui.components.FixMatchDialog
 import com.jainz.memc.ui.components.ProgressStrip
 import com.jainz.memc.ui.components.ScanStatus
 import com.jainz.memc.ui.components.SectionTitle
+import com.jainz.memc.ui.components.StorageAccessCard
 import com.jainz.memc.ui.components.TechBadges
 import com.jainz.memc.ui.theme.Palette
 import kotlinx.coroutines.Dispatchers
@@ -96,12 +95,6 @@ fun LibraryScreen(nav: NavController) {
     var dialog by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<SourceEntity?>(null) }
     var prefill by remember { mutableStateOf<DiscoveredServer?>(null) }
-    var permissionTick by remember { mutableStateOf(0) }
-    val hasPermission = remember(permissionTick) { LibraryScanner(context, g).hasDevicePermission() }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        permissionTick++
-        ScanWorker.enqueue(context)
-    }
 
     val phoneFolders = folders.filter { it.sourceId == LibraryScanner.DEVICE_SOURCE }
     val newServers = discovered.filter { d -> sources.none { it.host == d.host } }
@@ -171,23 +164,7 @@ fun LibraryScreen(nav: NavController) {
         }
 
         item { SectionTitle("This phone", Modifier.padding(top = 16.dp)) }
-        if (!hasPermission) {
-            item {
-                Button(
-                    onClick = { launcher.launch(LibraryScanner.devicePermissions()) },
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
-                ) { Text("Allow access to phone videos") }
-            }
-        } else if (phoneFolders.isEmpty()) {
-            item {
-                Text(
-                    "No videos found on this phone yet.",
-                    color = Palette.TextDim,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 20.dp),
-                )
-            }
-        }
+        item { StorageAccessCard() }
         items(phoneFolders, key = { "f${it.folder}" }) { f ->
             NavRow(
                 icon = Icons.Filled.Folder,

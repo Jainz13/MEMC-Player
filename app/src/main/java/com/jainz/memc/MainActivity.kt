@@ -34,6 +34,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.jainz.memc.data.scan.LibraryScanner
+import com.jainz.memc.data.scan.ScanWorker
 import com.jainz.memc.ui.home.HomeScreen
 import com.jainz.memc.ui.library.FolderScreen
 import com.jainz.memc.ui.library.LibraryScreen
@@ -56,6 +58,16 @@ class MainActivity : ComponentActivity() {
         )
         super.onCreate(savedInstanceState)
         setContent { MemcTheme { AppRoot() } }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Access may have been granted in the system Settings app: rescan when it goes up.
+        val g = MemcApp.graph
+        val access = LibraryScanner(this, g).storageAccess().ordinal
+        val before = g.settings.lastAccessLevel.value
+        if (access != before) g.settings.lastAccessLevel.set(access)
+        if (access > before && g.settings.indexDevice.value) ScanWorker.enqueue(this)
     }
 }
 

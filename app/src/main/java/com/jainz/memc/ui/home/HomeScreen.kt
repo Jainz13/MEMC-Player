@@ -1,7 +1,5 @@
 package com.jainz.memc.ui.home
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,7 +48,6 @@ import com.jainz.memc.MemcApp
 import com.jainz.memc.Routes
 import com.jainz.memc.data.db.MovieItem
 import com.jainz.memc.data.db.ShowItem
-import com.jainz.memc.data.scan.LibraryScanner
 import com.jainz.memc.data.scan.ScanWorker
 import com.jainz.memc.data.tmdb.Tmdb
 import com.jainz.memc.ui.Format
@@ -60,6 +57,7 @@ import com.jainz.memc.ui.components.EmptyMessage
 import com.jainz.memc.ui.components.LandscapeCard
 import com.jainz.memc.ui.components.PosterCard
 import com.jainz.memc.ui.components.ScanStatus
+import com.jainz.memc.ui.components.StorageAccessCard
 import com.jainz.memc.ui.components.Shelf
 import com.jainz.memc.ui.theme.Palette
 import kotlinx.coroutines.delay
@@ -87,10 +85,6 @@ fun HomeScreen(nav: NavController) {
     val count by remember { g.db.videos().observeCount() }.collectAsStateWithLifecycle(-1)
     val tmdbKey by g.settings.tmdbKey.flow.collectAsStateWithLifecycle()
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { ScanWorker.enqueue(context) }
-
     val recentMovies = remember(movies) { movies.sortedByDescending { it.addedAt } }
     val recentShows = remember(shows) { shows.sortedByDescending { it.addedAt } }
     val featured = remember(recentMovies, recentShows) { buildFeatured(recentMovies, recentShows) }
@@ -103,16 +97,17 @@ fun HomeScreen(nav: NavController) {
 
         if (count == 0) {
             item {
-                EmptyMessage(
-                    title = "Build your library",
-                    body = "Allow access to the videos on this phone, or add a network share from your NAS. " +
-                        "Movies and shows are recognised and get posters automatically.",
-                ) {
-                    Spacer(Modifier.height(8.dp))
-                    Button(onClick = { permissionLauncher.launch(LibraryScanner.devicePermissions()) }) {
-                        Text("Allow phone videos")
-                    }
-                    OutlinedButton(onClick = { nav.navigate(Routes.LIBRARY) }) { Text("Add network share") }
+                Column {
+                    EmptyMessage(
+                        title = "Build your library",
+                        body = "Let the app read this phone's storage, or add a network share from your NAS. " +
+                            "Movies and shows are recognised and get posters automatically.",
+                    )
+                    StorageAccessCard()
+                    OutlinedButton(
+                        onClick = { nav.navigate(Routes.LIBRARY) },
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    ) { Text("Add network share") }
                 }
             }
         }

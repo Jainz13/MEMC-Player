@@ -5,6 +5,9 @@ import android.content.ContentUris
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.net.Uri
+import android.os.Environment
+import android.os.storage.StorageManager
 import android.provider.MediaStore
 import androidx.core.content.ContextCompat
 import com.jainz.memc.AppGraph
@@ -15,6 +18,7 @@ import com.jainz.memc.data.db.VideoEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import java.io.File
 
 private data class FoundFile(
     val uri: String,
@@ -25,23 +29,49 @@ private data class FoundFile(
     val durationMs: Long = 0,
 )
 
+/** How much of the phone's storage the app may read. */
+enum class StorageAccess(val label: String) {
+    NONE("Not allowed"),
+    LIMITED("Only videos you picked"),
+    MEDIA("Photos and videos"),
+    FULL("All files"),
+}
+
 /** Finds video files on the phone and on network shares and keeps the library table in sync. */
 class LibraryScanner(private val context: Context, private val g: AppGraph) {
 
-    fun hasDevicePermission(): Boolean {
+    fun storageAccess(): StorageAccess {
+        if (Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()) return StorageAccess.FULL
         fun granted(p: String) = ContextCompat.checkSelfPermission(context, p) == PackageManager.PERMISSION_GRANTED
         return when {
-            Build.VERSION.SDK_INT >= 34 ->
-                granted(Manifest.permission.READ_MEDIA_VIDEO) || granted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
-            Build.VERSION.SDK_INT >= 33 -> granted(Manifest.permission.READ_MEDIA_VIDEO)
-            else -> granted(Manifest.permission.READ_EXTERNAL_STORAGE)
+            Build.VERSION.SDK_INT >= 33 && granted(Manifest.permission.READ_MEDIA_VIDEO) -> StorageAccess.MEDIA
+            Build.VERSION.SDK_INT < 33 && granted(Manifest.permission.READ_EXTERNAL_STORAGE) -> StorageAccess.MEDIA
+            Build.VERSION.SDK_INT >= 34 && granted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) -> StorageAccess.LIMITED
+            else -> StorageAccess.NONE
         }
     }
 
-    /** Videos in the phone's storage, via the system media index. */
-    suspend fun scanDevice(): Int = withContext(Dispatchers.IO) {
-        if (!hasDevicePermission()) return@withContext 0
+    fun hasDevicePermission(): Boolean = storageAccess() != StorageAccess.NONE
+
+    /**
+     * Videos in the phone's storage. Two passes, like Nova:
+     *  1. the system media index (fast, has durations);
+     *  2. a walk through every folder on internal storage and SD cards, which finds files the
+     *     media index skipped (e.g. some .mkv/.ts files or folders with a .nomedia file).
+     * Files are stored by their real path (file://) whenever access allows, so subtitle files
+     * sitting next to a video can be found at playback.
+     * Returns a short summary for the UI.
+     */
+    suspend fun scanDevice(): String = withContext(Dispatchers.IO) {
+        val access = storageAccess()
+        if (access == StorageAccess.NONE) return@withContext "No access to phone storage"
+        val usePaths = access == StorageAccess.MEDIA || access == StorageAccess.FULL
+        val found = ArrayList<FoundFile>()
+        val seen = HashSet<String>()
+
+        // ---- 1. Media index ----
         val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        @Suppress("DEPRECATION")
         val projection = arrayOf(
             MediaStore.Video.Media._ID,
             MediaStore.Video.Media.DISPLAY_NAME,
@@ -49,29 +79,85 @@ class LibraryScanner(private val context: Context, private val g: AppGraph) {
             MediaStore.Video.Media.SIZE,
             MediaStore.Video.Media.DATE_MODIFIED,
             MediaStore.Video.Media.DURATION,
+            MediaStore.Video.Media.DATA,
         )
-        val found = ArrayList<FoundFile>()
+        var indexed = 0
         context.contentResolver.query(collection, projection, null, null, null)?.use { c ->
             val iId = c.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
             val iName = c.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
-            val iPath = c.getColumnIndexOrThrow(MediaStore.Video.Media.RELATIVE_PATH)
+            val iRel = c.getColumnIndexOrThrow(MediaStore.Video.Media.RELATIVE_PATH)
             val iSize = c.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
             val iMod = c.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_MODIFIED)
             val iDur = c.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
+            @Suppress("DEPRECATION")
+            val iData = c.getColumnIndex(MediaStore.Video.Media.DATA)
             while (c.moveToNext()) {
                 val name = c.getString(iName) ?: continue
+                val path = if (iData >= 0) c.getString(iData) else null
+                if (path != null && !seen.add(path)) continue
+                val uri = if (usePaths && path != null) Uri.fromFile(File(path)).toString()
+                else ContentUris.withAppendedId(collection, c.getLong(iId)).toString()
                 found += FoundFile(
-                    uri = ContentUris.withAppendedId(collection, c.getLong(iId)).toString(),
-                    folder = c.getString(iPath) ?: "",
+                    uri = uri,
+                    folder = c.getString(iRel) ?: "",
                     fileName = name,
                     size = c.getLong(iSize),
                     modified = c.getLong(iMod) * 1000,
                     durationMs = c.getLong(iDur),
                 )
+                indexed++
             }
         }
+
+        // ---- 2. Folder walk ----
+        var extra = 0
+        if (usePaths) {
+            for (root in storageRoots()) {
+                val stack = ArrayDeque<Pair<File, Int>>()
+                stack.addLast(root to 0)
+                while (stack.isNotEmpty()) {
+                    ensureActive()
+                    val (dir, depth) = stack.removeLast()
+                    val children = dir.listFiles() ?: continue
+                    for (f in children) {
+                        val name = f.name
+                        if (f.isDirectory) {
+                            val skip = name.startsWith(".") || (depth == 0 && name == "Android") || depth >= 12
+                            if (!skip) stack.addLast(f to depth + 1)
+                        } else if (NameParser.isVideo(name) && seen.add(f.absolutePath)) {
+                            val rel = dir.absolutePath.removePrefix(root.absolutePath).trim('/')
+                            found += FoundFile(
+                                uri = Uri.fromFile(f).toString(),
+                                folder = if (rel.isEmpty()) "" else "$rel/",
+                                fileName = name,
+                                size = f.length(),
+                                modified = f.lastModified(),
+                            )
+                            extra++
+                        }
+                    }
+                }
+            }
+        }
+
         merge(DEVICE_SOURCE, found)
-        found.size
+        when {
+            found.isEmpty() && access == StorageAccess.LIMITED ->
+                "No videos - you allowed only selected videos. Allow all files to scan everything."
+            found.isEmpty() -> "No videos found on this phone"
+            extra > 0 -> "${found.size} videos found ($extra outside the media index)"
+            else -> "${found.size} videos found"
+        }
+    }
+
+    private fun storageRoots(): List<File> {
+        val roots = LinkedHashSet<File>()
+        roots += Environment.getExternalStorageDirectory()
+        if (Build.VERSION.SDK_INT >= 30) {
+            val sm = context.getSystemService(StorageManager::class.java)
+            sm?.storageVolumes?.forEach { v -> v.directory?.let { roots += it } }
+        }
+        return roots.filter { it.canRead() }
     }
 
     /** Walks an SMB share (or its configured sub-folder) for video files. */
@@ -190,8 +276,11 @@ class LibraryScanner(private val context: Context, private val g: AppGraph) {
         fun isSmb(uri: String) = uri.startsWith("smb://")
 
         /** smb://srcN@host/share/path -> "/share/path" (lower-case, SMB is case-insensitive). */
-        fun identity(uri: String): String =
-            if (isSmb(uri)) (android.net.Uri.parse(uri).path ?: uri).lowercase() else uri
+        fun identity(uri: String): String = when {
+            isSmb(uri) -> (Uri.parse(uri).path ?: uri).lowercase()
+            uri.startsWith("file://") -> Uri.parse(uri).path ?: uri
+            else -> uri
+        }
 
         fun devicePermissions(): Array<String> = when {
             Build.VERSION.SDK_INT >= 34 -> arrayOf(

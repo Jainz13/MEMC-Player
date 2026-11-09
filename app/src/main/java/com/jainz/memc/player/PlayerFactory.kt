@@ -17,7 +17,9 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import com.jainz.memc.data.smb.SmbDataSource
+import com.jainz.memc.core.Settings
 import com.jainz.memc.data.smb.SmbPool
+import java.util.Locale
 
 /**
  * Builds the player tuned for the S24 Ultra:
@@ -29,17 +31,33 @@ import com.jainz.memc.data.smb.SmbPool
 @UnstableApi
 object PlayerFactory {
 
-    fun create(context: Context, smb: SmbPool): ExoPlayer {
+    fun create(context: Context, smb: SmbPool, settings: Settings): ExoPlayer {
         val renderers = DefaultRenderersFactory(context)
-            // Prefer the phone's own decoders; use FFmpeg only for formats they can't handle.
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+            // Normally the phone's own decoders first and FFmpeg only for formats they can't handle;
+            // "Always use FFmpeg for audio" flips that for audio.
+            .setExtensionRendererMode(
+                if (settings.ffmpegAudio.value) DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+                else DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
+            )
             .setEnableDecoderFallback(true)
 
+        val audioLang = settings.audioLanguage.value.ifBlank { null }
+        val subLang = settings.subtitleLanguage.value.ifBlank { Locale.getDefault().language }
         val trackSelector = DefaultTrackSelector(context).apply {
             setParameters(
                 buildUponParameters()
-                    .setPreferredTextLanguage(null)
-                    .setSelectUndeterminedTextLanguage(false)
+                    .setPreferredAudioLanguage(audioLang)
+                    .apply {
+                        if (settings.subtitlesOn.value) {
+                            setPreferredTextLanguage(subLang)
+                            setSelectUndeterminedTextLanguage(true)
+                        } else {
+                            // Off by default, but forced subtitles (foreign-language lines) still show.
+                            setPreferredTextLanguage(null)
+                            setSelectUndeterminedTextLanguage(false)
+                            setIgnoredTextSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                        }
+                    }
                     // Keep the best audio track even if it needs the FFmpeg decoder.
                     .setExceedRendererCapabilitiesIfNecessary(true)
             )
@@ -75,6 +93,13 @@ object PlayerFactory {
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(10_000)
             .build()
+            .apply {
+                // Let the 120 Hz LTPO panel switch to a multiple of the video's frame rate (no judder).
+                setVideoChangeFrameRateStrategy(
+                    if (settings.matchFrameRate.value) C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS
+                    else C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF
+                )
+            }
     }
 }
 

@@ -58,4 +58,33 @@ class Settings(context: Context) {
     val autoPlayNext = bool("auto_play_next", true)
     val seekStepSec = int("seek_step", 10)
     val subtitleScale = int("subtitle_scale", 100)
+
+    // ---- Phone storage ----
+    /** Last seen storage access level (LibraryScanner.StorageAccess ordinal). */
+    val lastAccessLevel = int("last_access_level", 0)
+    /** Result of the last phone scan, shown in Library and Settings. */
+    val deviceScanInfo = string("device_scan_info", "")
+
+    // ---- Video ----
+    /** 0 = fit, 1 = crop to fill, 2 = stretch */
+    val defaultZoom = int("default_zoom", 0)
+    /** Switch the display to the video's frame rate when it can do so without a black flash. */
+    val matchFrameRate = bool("match_frame_rate", true)
+
+    // ---- Audio ----
+    /** ISO language code, "" = device default */
+    val audioLanguage = string("audio_language", "")
+    /** Decode every audio track with FFmpeg instead of the phone's decoders. */
+    val ffmpegAudio = bool("ffmpeg_audio", false)
+
+    // ---- Subtitles ----
+    val subtitlesOn = bool("subtitles_on", false)
+    /** ISO language code, "" = device language */
+    val subtitleLanguage = string("subtitle_language", "")
+
+    // ---- MEMC (used by the frame interpolation engine, stage 2) ----
+    val memcEnabled = bool("memc_enabled", false)
+    val memcTargetFps = int("memc_target_fps", 60)
+    /** 0 = battery saver, 1 = balanced, 2 = best quality */
+    val memcQuality = int("memc_quality", 1)
 }
