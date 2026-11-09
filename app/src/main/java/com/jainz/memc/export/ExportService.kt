@@ -38,7 +38,10 @@ import com.jainz.memc.MemcApp
 import com.jainz.memc.R
 import com.jainz.memc.memc.MemcControl
 import com.jainz.memc.memc.MemcEffect
+import com.jainz.memc.player.ColorFixExtractorsFactory
 import com.jainz.memc.player.RoutingDataSource
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -98,7 +101,13 @@ class ExportService : Service() {
         val g = MemcApp.graph
         // Export always uses the best quality setting: there is no real-time deadline here.
         val effect = MemcEffect(MemcControl(enabled = true, targetFps = 60, quality = 2))
-        val mediaSources = DefaultMediaSourceFactory(RoutingDataSource.Factory(this, g.smb))
+        // Same colour fix as playback, so HDR files missing container colour info export as HDR10.
+        val extractors = ColorFixExtractorsFactory(
+            DefaultExtractorsFactory()
+                .setConstantBitrateSeekingEnabled(true)
+                .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ENABLE_HDMV_DTS_AUDIO_STREAMS)
+        )
+        val mediaSources = DefaultMediaSourceFactory(RoutingDataSource.Factory(this, g.smb), extractors)
         val assetLoader = DefaultAssetLoaderFactory(
             this,
             DefaultDecoderFactory.Builder(this).build(),

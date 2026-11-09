@@ -75,7 +75,7 @@ object PlayerFactory {
             // Blu-ray .m2ts files carry DTS in a stream type that needs this flag.
             .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ENABLE_HDMV_DTS_AUDIO_STREAMS)
 
-        val mediaSources = DefaultMediaSourceFactory(RoutingDataSource.Factory(context, smb), extractors)
+        val mediaSources = DefaultMediaSourceFactory(RoutingDataSource.Factory(context, smb), ColorFixExtractorsFactory(extractors))
 
         return ExoPlayer.Builder(context, renderers)
             .setTrackSelector(trackSelector)

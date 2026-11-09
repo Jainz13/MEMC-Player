@@ -133,6 +133,7 @@ dependencies {
     implementation(libs.media3.datasource)
     implementation(libs.media3.extractor)
     implementation(libs.media3.effect)
+    implementation(libs.media3.container)
     implementation(libs.media3.transformer)
     implementation(libs.ffmpeg.decoder)
 
