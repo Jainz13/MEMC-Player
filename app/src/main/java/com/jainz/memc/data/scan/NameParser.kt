@@ -80,12 +80,19 @@ object NameParser {
         return ParsedName(Kind.MOVIE, title.ifBlank { base }, year, null, null, tech)
     }
 
+    // Android's regex engine (ICU) rejects unescaped ] and } - always escape them.
+    private val BRACKETS = Regex("""\[[^\]]*\]""")
+    private val BRACES = Regex("""\{[^\}]*\}""")
+    private val INNER_DOT = Regex("""(?<=[^\s.])\.(?=[^\s.])""")
+    private val SPACES = Regex("""\s+""")
+    private val PARENS = Regex("""[()]""")
+
     private fun normalize(s: String): String = s
-        .replace(Regex("""\[[^\]]*]"""), " ")
-        .replace(Regex("""\{[^}]*}"""), " ")
+        .replace(BRACKETS, " ")
+        .replace(BRACES, " ")
         .replace('_', ' ')
-        .replace(Regex("""(?<=[^\s.])\.(?=[^\s.])"""), " ")
-        .replace(Regex("""\s+"""), " ")
+        .replace(INNER_DOT, " ")
+        .replace(SPACES, " ")
         .trim()
 
     /** Title = everything before the year (or before the first release-group junk word). */
@@ -108,8 +115,8 @@ object NameParser {
     }
 
     private fun cleanTitle(s: String): String = s
-        .replace(Regex("""[()]"""), " ")
-        .replace(Regex("""\s+"""), " ")
+        .replace(PARENS, " ")
+        .replace(SPACES, " ")
         .trim(' ', '-', '–', ':', ',', '.')
         .trim()
 

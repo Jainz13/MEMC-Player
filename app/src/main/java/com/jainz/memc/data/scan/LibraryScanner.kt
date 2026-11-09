@@ -243,7 +243,12 @@ class LibraryScanner(private val context: Context, private val g: AppGraph) {
     }
 
     private fun newVideo(sourceId: Long, f: FoundFile, now: Long): VideoEntity {
-        val p = NameParser.parse(f.fileName, f.folder)
+        // One odd file name must never stop the whole scan.
+        val p = try {
+            NameParser.parse(f.fileName, f.folder)
+        } catch (e: Exception) {
+            ParsedName(Kind.MOVIE, f.fileName.substringBeforeLast('.'), null, null, null, "")
+        }
         val personal = PERSONAL_FOLDERS.containsMatchIn(f.folder)
         val tooSmall = f.size in 1 until 40L * MB && p.kind != Kind.EPISODE
         val skip = personal || tooSmall
