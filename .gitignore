@@ -9,5 +9,7 @@
 /captures/
 .externalNativeBuild/
 .cxx/
-/keystore/*.jks
 /keystore/keystore.properties
+/keystore/
+*.jks
+*.keystore

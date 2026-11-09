@@ -33,18 +33,15 @@ jobs:
           if [ -n "$KEYSTORE_BASE64" ]; then
             mkdir -p keystore
             echo "$KEYSTORE_BASE64" | base64 -d > keystore/release.jks
-            echo "MEMC_KEYSTORE_FILE=keystore/release.jks" >> "$GITHUB_ENV"
             echo "Release signing key restored."
           else
-            echo "::warning::No MEMC_KEYSTORE_BASE64 secret - APK will be debug-signed and cannot update over a previous install."
+            echo "::warning::Secret MEMC_KEYSTORE_BASE64 is not set - this APK is debug-signed and will not update over a previous install."
           fi
 
       - name: Build release APK
         env:
           VERSION_CODE: ${{ github.run_number }}
           MEMC_KEYSTORE_PASSWORD: ${{ secrets.MEMC_KEYSTORE_PASSWORD }}
-          MEMC_KEY_ALIAS: ${{ secrets.MEMC_KEY_ALIAS }}
-          MEMC_KEY_PASSWORD: ${{ secrets.MEMC_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --stacktrace

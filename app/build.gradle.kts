@@ -18,9 +18,11 @@ val keystoreProps = Properties().apply {
 fun signingValue(env: String, prop: String): String? =
     System.getenv(env)?.takeIf { it.isNotBlank() } ?: keystoreProps.getProperty(prop)
 
-val releaseStoreFile = signingValue("MEMC_KEYSTORE_FILE", "storeFile")
-    ?.let { rootProject.file(it) }
-    ?.takeIf { it.exists() }
+// CI restores keystore/release.jks from the MEMC_KEYSTORE_BASE64 secret; it is never committed.
+val releaseStorePassword = signingValue("MEMC_KEYSTORE_PASSWORD", "storePassword")
+val releaseStoreFile = (signingValue("MEMC_KEYSTORE_FILE", "storeFile") ?: "keystore/release.jks")
+    .let { rootProject.file(it) }
+    .takeIf { it.exists() && !releaseStorePassword.isNullOrBlank() }
 
 android {
     namespace = "com.jainz.memc"
@@ -41,9 +43,9 @@ android {
         create("release") {
             if (releaseStoreFile != null) {
                 storeFile = releaseStoreFile
-                storePassword = signingValue("MEMC_KEYSTORE_PASSWORD", "storePassword")
-                keyAlias = signingValue("MEMC_KEY_ALIAS", "keyAlias")
-                keyPassword = signingValue("MEMC_KEY_PASSWORD", "keyPassword")
+                storePassword = releaseStorePassword
+                keyAlias = signingValue("MEMC_KEY_ALIAS", "keyAlias") ?: "memc"
+                keyPassword = signingValue("MEMC_KEY_PASSWORD", "keyPassword") ?: releaseStorePassword
             }
         }
     }
