@@ -1,0 +1,180 @@
+package com.jainz.memc.data.scan
+
+import android.Manifest
+import android.content.ContentUris
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.MediaStore
+import androidx.core.content.ContextCompat
+import com.jainz.memc.AppGraph
+import com.jainz.memc.data.db.Kind
+import com.jainz.memc.data.db.ScrapeState
+import com.jainz.memc.data.db.SourceEntity
+import com.jainz.memc.data.db.VideoEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+
+private data class FoundFile(
+    val uri: String,
+    val folder: String,
+    val fileName: String,
+    val size: Long,
+    val modified: Long,
+    val durationMs: Long = 0,
+)
+
+/** Finds video files on the phone and on network shares and keeps the library table in sync. */
+class LibraryScanner(private val context: Context, private val g: AppGraph) {
+
+    fun hasDevicePermission(): Boolean {
+        fun granted(p: String) = ContextCompat.checkSelfPermission(context, p) == PackageManager.PERMISSION_GRANTED
+        return when {
+            Build.VERSION.SDK_INT >= 34 ->
+                granted(Manifest.permission.READ_MEDIA_VIDEO) || granted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+            Build.VERSION.SDK_INT >= 33 -> granted(Manifest.permission.READ_MEDIA_VIDEO)
+            else -> granted(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
+
+    /** Videos in the phone's storage, via the system media index. */
+    suspend fun scanDevice(): Int = withContext(Dispatchers.IO) {
+        if (!hasDevicePermission()) return@withContext 0
+        val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        val projection = arrayOf(
+            MediaStore.Video.Media._ID,
+            MediaStore.Video.Media.DISPLAY_NAME,
+            MediaStore.Video.Media.RELATIVE_PATH,
+            MediaStore.Video.Media.SIZE,
+            MediaStore.Video.Media.DATE_MODIFIED,
+            MediaStore.Video.Media.DURATION,
+        )
+        val found = ArrayList<FoundFile>()
+        context.contentResolver.query(collection, projection, null, null, null)?.use { c ->
+            val iId = c.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
+            val iName = c.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
+            val iPath = c.getColumnIndexOrThrow(MediaStore.Video.Media.RELATIVE_PATH)
+            val iSize = c.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
+            val iMod = c.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_MODIFIED)
+            val iDur = c.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
+            while (c.moveToNext()) {
+                val name = c.getString(iName) ?: continue
+                found += FoundFile(
+                    uri = ContentUris.withAppendedId(collection, c.getLong(iId)).toString(),
+                    folder = c.getString(iPath) ?: "",
+                    fileName = name,
+                    size = c.getLong(iSize),
+                    modified = c.getLong(iMod) * 1000,
+                    durationMs = c.getLong(iDur),
+                )
+            }
+        }
+        merge(DEVICE_SOURCE, found)
+        found.size
+    }
+
+    /** Walks an SMB share (or its configured sub-folder) for video files. */
+    suspend fun scanSource(src: SourceEntity): Int = withContext(Dispatchers.IO) {
+        val found = ArrayList<FoundFile>()
+        val stack = ArrayDeque<Pair<String, Int>>()
+        stack.addLast(src.path.trim('/') to 0)
+        while (stack.isNotEmpty()) {
+            ensureActive()
+            val (dir, depth) = stack.removeLast()
+            val entries = g.smb.list(g.smb.location(src, dir))
+            for (e in entries) {
+                if (e.isDir) {
+                    if (depth < 12 && !skipDir(e.name)) stack.addLast(e.path to depth + 1)
+                } else if (NameParser.isVideo(e.name)) {
+                    if (e.name.contains("sample", ignoreCase = true) && e.size < 300L * MB) continue
+                    found += FoundFile(
+                        uri = g.smb.uriFor(src, e.path),
+                        folder = "/" + dir,
+                        fileName = e.name,
+                        size = e.size,
+                        modified = e.modified,
+                    )
+                }
+            }
+        }
+        merge(src.id, found)
+        found.size
+    }
+
+    private fun skipDir(name: String): Boolean {
+        val n = name.lowercase()
+        return n.startsWith(".") || n.startsWith("@") || n.startsWith("#") || n.startsWith("$") ||
+            n == "system volume information" || n == "lost+found" || n == "recycle bin" || n == "thumbs"
+    }
+
+    private suspend fun merge(sourceId: Long, found: List<FoundFile>) {
+        val videos = g.db.videos()
+        val existing = videos.bySource(sourceId).associateBy { it.uri }
+        val now = System.currentTimeMillis()
+        val inserts = ArrayList<VideoEntity>()
+        val updates = ArrayList<VideoEntity>()
+
+        for (f in found) {
+            val old = existing[f.uri]
+            if (old == null) {
+                inserts += newVideo(sourceId, f, now)
+            } else if (old.size != f.size || old.fileName != f.fileName) {
+                updates += old.copy(size = f.size, modified = f.modified, fileName = f.fileName)
+            }
+        }
+        val foundUris = found.mapTo(HashSet()) { it.uri }
+        val removed = existing.values.filter { it.uri !in foundUris }.map { it.id }
+
+        if (inserts.isNotEmpty()) videos.insertAll(inserts)
+        if (updates.isNotEmpty()) videos.updateAll(updates)
+        if (removed.isNotEmpty()) removed.chunked(500).forEach { videos.deleteIds(it) }
+        if (removed.isNotEmpty()) {
+            g.db.meta().pruneMovies()
+            g.db.meta().pruneShows()
+        }
+    }
+
+    private fun newVideo(sourceId: Long, f: FoundFile, now: Long): VideoEntity {
+        val p = NameParser.parse(f.fileName, f.folder)
+        val personal = PERSONAL_FOLDERS.containsMatchIn(f.folder)
+        val tooSmall = f.size in 1 until 40L * MB && p.kind != Kind.EPISODE
+        val skip = personal || tooSmall
+        return VideoEntity(
+            uri = f.uri,
+            sourceId = sourceId,
+            folder = f.folder,
+            fileName = f.fileName,
+            size = f.size,
+            modified = f.modified,
+            addedAt = now,
+            kind = if (skip) Kind.UNKNOWN else p.kind,
+            parsedTitle = p.title,
+            parsedYear = p.year,
+            season = p.season,
+            episode = p.episode,
+            tech = p.tech,
+            scrapeState = if (skip) ScrapeState.SKIPPED else ScrapeState.PENDING,
+            durationMs = f.durationMs,
+        )
+    }
+
+    companion object {
+        const val DEVICE_SOURCE = 0L
+        private const val MB = 1024L * 1024L
+        private val PERSONAL_FOLDERS = Regex(
+            """(?i)(^|/)(DCIM|Screenshots|Screen ?recordings?|WhatsApp|Snapchat|Instagram|Recordings|Camera)(/|$)"""
+        )
+
+        fun isSmb(uri: String) = uri.startsWith("smb://")
+
+        fun devicePermissions(): Array<String> = when {
+            Build.VERSION.SDK_INT >= 34 -> arrayOf(
+                Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
+            )
+            Build.VERSION.SDK_INT >= 33 -> arrayOf(Manifest.permission.READ_MEDIA_VIDEO)
+            else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
+}
