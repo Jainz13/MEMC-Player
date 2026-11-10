@@ -2,6 +2,7 @@ package com.jainz.memc.memc
 
 import android.content.Context
 import android.opengl.GLES20
+import android.opengl.GLES30
 import androidx.media3.common.C
 import androidx.media3.common.GlObjectsProvider
 import androidx.media3.common.GlTextureInfo
@@ -84,6 +85,20 @@ class MemcShaderProgram(
     private var readySignalled = false
     private var endOfStreamPending = false
 
+    // AI interpolation on the NPU (export). Null until first used; stays null if it failed.
+    private var npu: NpuFlow? = null
+    private var npuTried = false
+    private val npuSmallProgram = if (control.npuFactory != null) program(context, "npu_small.frag") else null
+    private val npuInterpProgram = if (control.npuFactory != null) program(context, "npu_interp.frag") else null
+    private val npuSmall = arrayOfNulls<GlTextureInfo>(2)
+    private val npuImage = arrayOfNulls<java.nio.FloatBuffer>(2)
+    private val npuImageValid = BooleanArray(2)
+    private var npuPixels: java.nio.ByteBuffer? = null
+    private var npuFlowUpload: java.nio.FloatBuffer? = null
+    private var npuFlowTex = 0
+    private var npuMaskTex = 0
+    private var npuSceneCut = false
+
     // Governor state.
     private var lastWallNs = 0L
     private val behind = ArrayDeque<Boolean>()
@@ -141,6 +156,7 @@ class MemcShaderProgram(
             } else {
                 val slot = if (held == 0) 0 else 1 - cur
                 ingest(inputTexture, frames[slot]!!)
+                npuImageValid[slot] = false
                 inputListener.onInputFrameProcessed(inputTexture)
                 drawLuma(frames[slot]!!, lumaFine[slot]!!)
                 drawCopy(lumaFine[slot]!!, lumaCoarse[slot]!!)
@@ -204,6 +220,11 @@ class MemcShaderProgram(
             releaseSearchTextures()
             retired.forEach { runCatching { it.release() } }
             retired.clear()
+            npuSmall.filterNotNull().forEach { runCatching { it.release() } }
+            if (npuFlowTex != 0) GLES20.glDeleteTextures(2, intArrayOf(npuFlowTex, npuMaskTex), 0)
+            runCatching { npu?.close() }
+            npu = null
+            listOfNotNull(npuSmallProgram, npuInterpProgram).forEach { it.delete() }
             listOfNotNull(copyProgram, pictureProgram, lumaProgram, searchProgram, refineProgram, smoothProgram, interpProgram)
                 .forEach { it.delete() }
         } catch (e: GlUtil.GlException) {
@@ -284,7 +305,10 @@ class MemcShaderProgram(
             while (jobs.isNotEmpty() && freeOutputs.isNotEmpty()) {
                 val job = jobs.removeFirst()
                 val out = freeOutputs.removeFirst()
-                if (job.interpolate) drawInterp(out, job.alpha) else drawCopy(frames[cur]!!, out)
+                when {
+                    !job.interpolate -> drawCopy(frames[cur]!!, out)
+                    !drawInterpNpu(out, job.alpha) -> drawInterp(out, job.alpha)
+                }
                 emit(out, job.ptsUs)
             }
         } catch (e: Exception) {
@@ -380,6 +404,138 @@ class MemcShaderProgram(
             p.setFloatUniform("uLumaScale", lumaScale)
             p.setFloatsUniform("uCost", floatArrayOf(lo, hi))
         }
+    }
+
+    // ---- AI interpolation (RIFE on the NPU) ----------------------------------------------------------
+
+    /**
+     * Builds the in-between frame with the AI model. Returns false when the NPU isn't in use
+     * (not requested, failed to start, or failed mid-way), so the caller uses block matching.
+     */
+    private fun drawInterpNpu(out: GlTextureInfo, alpha: Float): Boolean {
+        val factory = control.npuFactory ?: return false
+        if (!npuTried) {
+            npuTried = true
+            try {
+                control.npuStatus = "starting"
+                npu = factory()
+                val n = npu!!
+                for (i in 0..1) {
+                    npuSmall[i] = texture(n.width, n.height, false)
+                    npuImage[i] = NpuFlow.floats(3 * n.width * n.height)
+                }
+                npuPixels = java.nio.ByteBuffer.allocateDirect(n.width * n.height * 4).order(java.nio.ByteOrder.nativeOrder())
+                npuFlowUpload = NpuFlow.floats(4 * n.width * n.height)
+                npuFlowTex = floatTexture(n.width, n.height, GLES30.GL_RGBA16F, GLES30.GL_RGBA)
+                npuMaskTex = floatTexture(n.width, n.height, GLES30.GL_R16F, GLES30.GL_RED)
+            } catch (e: Throwable) {
+                npuFailed(e)
+            }
+        }
+        val n = npu ?: return false
+        try {
+            val w = n.width
+            val h = n.height
+            var refreshed = false
+            for (i in intArrayOf(prev, cur)) {
+                if (npuImageValid[i]) continue
+                readSmall(i, w, h)
+                npuImageValid[i] = true
+                refreshed = true
+            }
+            if (refreshed) npuSceneCut = isSceneCut(npuImage[prev]!!, npuImage[cur]!!, w * h)
+            if (npuSceneCut) {
+                // A cut has no in-between: show the nearer real frame.
+                drawCopy(frames[if (alpha < 0.5f) prev else cur]!!, out)
+                return true
+            }
+
+            val (flow, mask) = n.run(npuImage[prev]!!, npuImage[cur]!!, alpha)
+            // Planar (x0,y0,x1,y1 planes) -> one RGBA texel per pixel.
+            val upload = npuFlowUpload!!
+            val plane = w * h
+            upload.clear()
+            for (p in 0 until plane) {
+                upload.put(flow.get(p))
+                upload.put(flow.get(plane + p))
+                upload.put(flow.get(2 * plane + p))
+                upload.put(flow.get(3 * plane + p))
+            }
+            upload.rewind()
+            mask.rewind()
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, npuFlowTex)
+            GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, w, h, GLES30.GL_RGBA, GLES20.GL_FLOAT, upload)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, npuMaskTex)
+            GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, w, h, GLES30.GL_RED, GLES20.GL_FLOAT, mask)
+            GlUtil.checkGlError()
+
+            draw(out, npuInterpProgram!!) { p ->
+                p.setSamplerTexIdUniform("uPrev", frames[prev]!!.texId, 0)
+                p.setSamplerTexIdUniform("uCur", frames[cur]!!.texId, 1)
+                p.setSamplerTexIdUniform("uFlow", npuFlowTex, 2)
+                p.setSamplerTexIdUniform("uMask", npuMaskTex, 3)
+                p.setFloatsUniform("uFlowToUv", floatArrayOf(1f / w, 1f / h))
+            }
+            control.npuStatus = String.format(java.util.Locale.US, "AI on the NPU, %.0f ms per frame", n.averageMs)
+            return true
+        } catch (e: Throwable) {
+            npuFailed(e)
+            return false
+        }
+    }
+
+    private fun npuFailed(e: Throwable) {
+        control.npuStatus = "AI unavailable (${(e.message ?: e.javaClass.simpleName).take(160)}) - used the GPU engine"
+        runCatching { npu?.close() }
+        npu = null
+    }
+
+    /** Renders frame [i] at the model's size and reads it back as planar RGB floats. */
+    private fun readSmall(i: Int, w: Int, h: Int) {
+        val small = npuSmall[i]!!
+        draw(small, npuSmallProgram!!) { p ->
+            p.setSamplerTexIdUniform("uTex", frames[i]!!.texId, 0)
+            p.setIntUniform("uHdr", if (useHdr) 1 else 0)
+        }
+        val pixels = npuPixels!!
+        pixels.clear()
+        GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, pixels)
+        GlUtil.checkGlError()
+        val image = npuImage[i]!!
+        val plane = w * h
+        val scale = 1f / 255f
+        for (p in 0 until plane) {
+            val o = p * 4
+            image.put(p, (pixels.get(o).toInt() and 0xff) * scale)
+            image.put(plane + p, (pixels.get(o + 1).toInt() and 0xff) * scale)
+            image.put(2 * plane + p, (pixels.get(o + 2).toInt() and 0xff) * scale)
+        }
+    }
+
+    /** Mean brightness change over a sparse grid; a large jump means the shot changed. */
+    private fun isSceneCut(a: java.nio.FloatBuffer, b: java.nio.FloatBuffer, plane: Int): Boolean {
+        var sum = 0f
+        var count = 0
+        var p = 0
+        while (p < plane) {
+            sum += kotlin.math.abs(a.get(plane + p) - b.get(plane + p))   // green plane
+            count++
+            p += 37
+        }
+        return count > 0 && sum / count > 0.16f
+    }
+
+    private fun floatTexture(w: Int, h: Int, internalFormat: Int, format: Int): Int {
+        val ids = IntArray(1)
+        GLES20.glGenTextures(1, ids, 0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, internalFormat, w, h, 0, format, GLES20.GL_FLOAT, null)
+        GlUtil.checkGlError()
+        return ids[0]
     }
 
     private fun drawCopy(src: GlTextureInfo, dst: GlTextureInfo) {

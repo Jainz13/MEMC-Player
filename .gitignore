@@ -13,3 +13,4 @@
 /keystore/
 *.jks
 *.keystore
+/app/src/main/assets/npu/

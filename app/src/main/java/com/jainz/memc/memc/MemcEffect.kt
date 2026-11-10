@@ -26,6 +26,14 @@ class MemcControl(enabled: Boolean, targetFps: Int, quality: Int) {
     @Volatile var adaptive: Boolean = true
     @Volatile var playbackSpeed: Float = 1f
 
+    /**
+     * Export only: creates the AI motion model on the NPU (called once, on the render thread).
+     * When it is set and works, in-between frames come from RIFE instead of block matching.
+     */
+    @Volatile var npuFactory: (() -> NpuFlow)? = null
+    /** What the NPU path is doing, for the export report. */
+    @Volatile var npuStatus: String = ""
+
     // ---- Status, written by the engine ----
     @Volatile var sourceFps: Float = 0f
     @Volatile var active: Boolean = false

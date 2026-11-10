@@ -48,6 +48,8 @@ import android.widget.Toast
 import androidx.compose.ui.text.font.FontFamily
 import com.jainz.memc.BuildConfig
 import com.jainz.memc.core.CrashLog
+import com.jainz.memc.memc.NpuFlow
+import androidx.compose.material3.TextButton
 import com.jainz.memc.MemcApp
 import com.jainz.memc.data.scan.ScanWorker
 import com.jainz.memc.data.tmdb.Tmdb
@@ -87,6 +89,8 @@ fun SettingsScreen(nav: NavController) {
     val subLang by st.subtitleLanguage.flow.collectAsStateWithLifecycle()
     val memcFps by st.memcTargetFps.flow.collectAsStateWithLifecycle()
     val memcOn by st.memcEnabled.flow.collectAsStateWithLifecycle()
+    val npuExport by st.npuExport.flow.collectAsStateWithLifecycle()
+    var npuState by remember { mutableStateOf(NpuFlow.state(context)) }
     val hdrBoost by st.hdrBoost.flow.collectAsStateWithLifecycle()
     val autoHdr by st.autoHdr.flow.collectAsStateWithLifecycle()
     val memcQuality by st.memcQuality.flow.collectAsStateWithLifecycle()
@@ -316,6 +320,28 @@ fun SettingsScreen(nav: NavController) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(0 to "Battery saver", 1 to "Balanced", 2 to "Best").forEach { (v, label) ->
                         FilterChip(selected = memcQuality == v, onClick = { st.memcQuality.set(v) }, label = { Text(label) })
+                    }
+                }
+                ToggleRow(
+                    "AI interpolation for exports (NPU)",
+                    "Uses the RIFE model on the phone's NPU for 60 fps exports: cleaner on complex motion. Falls back to the GPU engine if the NPU can't be used. First use takes up to a minute to prepare.",
+                    npuExport,
+                ) { st.npuExport.set(it) }
+                if (npuState.isNotBlank()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "NPU status: " + when {
+                                npuState == "ok" -> "working"
+                                npuState == "trying" -> "was starting when the app closed"
+                                else -> npuState
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (npuState == "ok") Palette.Accent else Palette.TextDim,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (npuState != "ok") {
+                            TextButton(onClick = { NpuFlow.setState(context, ""); npuState = "" }) { Text("Try again") }
+                        }
                     }
                 }
                 Text(

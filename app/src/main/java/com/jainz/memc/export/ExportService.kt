@@ -38,6 +38,7 @@ import com.jainz.memc.MemcApp
 import com.jainz.memc.R
 import com.jainz.memc.memc.MemcControl
 import com.jainz.memc.memc.MemcEffect
+import com.jainz.memc.memc.NpuFlow
 import com.jainz.memc.player.ColorFixExtractorsFactory
 import com.jainz.memc.player.RoutingDataSource
 import androidx.media3.extractor.DefaultExtractorsFactory
@@ -65,6 +66,7 @@ class ExportService : Service() {
     private val progress = ProgressHolder()
     private var isForeground = false
     private var stats: String? = null
+    private var exportControl: MemcControl? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -141,7 +143,17 @@ class ExportService : Service() {
         val g = MemcApp.graph
         // Export always uses the best quality setting: there is no real-time deadline here.
         // Full resolution and no load governor: export has no real-time deadline.
-        val effect = MemcEffect(MemcControl(enabled = true, targetFps = 60, quality = 2).apply { adaptive = false })
+        val control = MemcControl(enabled = true, targetFps = 60, quality = 2).apply {
+            adaptive = false
+            // AI interpolation on the NPU when enabled; the engine falls back to block matching
+            // by itself if the NPU can't be used.
+            if (g.settings.npuExport.value && NpuFlow.hasModel(this@ExportService)) {
+                val appContext = applicationContext
+                npuFactory = { NpuFlow.create(appContext) }
+            }
+        }
+        exportControl = control
+        val effect = MemcEffect(control)
         // Same colour fix as playback, so HDR files missing container colour info export as HDR10.
         val extractors = ColorFixExtractorsFactory(
             DefaultExtractorsFactory()
@@ -170,7 +182,7 @@ class ExportService : Service() {
                             java.util.Locale.US, "%d frames in %.0f min (%.1f fps) · encoder %s",
                             exportResult.videoFrameCount, seconds / 60, exportResult.videoFrameCount / seconds,
                             exportResult.videoEncoderName ?: "unknown",
-                        )
+                        ) + (exportControl?.npuStatus?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")
                         onFinished(job, out)
                     } catch (e: Exception) {
                         failCurrent("Saving failed: ${e.message}")

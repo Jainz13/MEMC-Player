@@ -31,6 +31,11 @@
         android:theme="@style/Theme.Memc"
         android:usesCleartextTraffic="true">
 
+        <!-- Lets the app talk to the Snapdragon NPU (used for AI frame interpolation). -->
+        <uses-native-library
+            android:name="libcdsprpc.so"
+            android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

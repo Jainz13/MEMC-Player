@@ -89,6 +89,8 @@ class Settings(context: Context) {
     val autoHdr = bool("auto_hdr", false)
 
     // ---- MEMC (used by the frame interpolation engine, stage 2) ----
+    /** Use the AI model (RIFE on the NPU) for 60 fps exports. */
+    val npuExport = bool("npu_export", true)
     val memcEnabled = bool("memc_enabled", false)
     val memcTargetFps = int("memc_target_fps", 60)
     /** 0 = battery saver, 1 = balanced, 2 = best quality */

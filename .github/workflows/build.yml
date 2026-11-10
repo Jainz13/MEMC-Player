@@ -48,6 +48,14 @@ jobs:
             echo "::warning::Secret MEMC_KEYSTORE_BASE64 is not set - this APK is debug-signed and will not update over a previous install."
           fi
 
+      - name: Fetch the NPU model
+        run: |
+          mkdir -p app/src/main/assets/npu
+          curl -fsSL -o app/src/main/assets/npu/rife_640x352.onnx \
+            https://github.com/${{ github.repository }}/releases/download/npu-model/rife422lite_640x352.onnx \
+            || echo "::warning::NPU model not found - building without AI interpolation."
+          ls -la app/src/main/assets/npu || true
+
       - name: Build release APK
         env:
           VERSION_CODE: ${{ github.run_number }}

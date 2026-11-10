@@ -87,7 +87,8 @@ android {
                 "META-INF/BC*.DSA",
             )
         }
-        jniLibs { useLegacyPackaging = false }
+        // Extracted to disk at install: the NPU loads its part of the QNN runtime from a real folder.
+        jniLibs { useLegacyPackaging = true }
     }
 
     lint {
@@ -141,5 +142,7 @@ dependencies {
     implementation(libs.coil.network)
     implementation(libs.okhttp)
     implementation(libs.smbj)
+    // ONNX Runtime with Qualcomm's QNN backend: runs the RIFE model on the Snapdragon NPU.
+    implementation(libs.onnxruntime.qnn)
     implementation(libs.coroutines.android)
 }
