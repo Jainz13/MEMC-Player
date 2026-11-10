@@ -157,6 +157,7 @@ class LibraryScanner(private val context: Context, private val g: AppGraph) {
             val sm = context.getSystemService(StorageManager::class.java)
             sm?.storageVolumes?.forEach { v -> v.directory?.let { roots += it } }
         }
+        context.getExternalFilesDir("Torrents")?.let { roots += it }
         return roots.filter { it.canRead() }
     }
 

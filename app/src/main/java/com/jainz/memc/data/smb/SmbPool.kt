@@ -157,6 +157,38 @@ class SmbPool(private val db: AppDatabase) {
         )
     }
 
+    /** Copies a file from the phone to the share, creating folders on the way. */
+    fun upload(loc: SmbLocation, local: java.io.File, onProgress: (Long) -> Unit) = withShare(loc) { share ->
+        var dir = ""
+        for (part in loc.path.trim('/').split('/').dropLast(1)) {
+            dir = if (dir.isEmpty()) part else "$dir\\$part"
+            if (!share.folderExists(dir)) share.mkdir(dir)
+        }
+        share.openFile(
+            loc.smbPath,
+            EnumSet.of(AccessMask.GENERIC_WRITE),
+            null,
+            SMB2ShareAccess.ALL,
+            SMB2CreateDisposition.FILE_OVERWRITE_IF,
+            null,
+        ).use { out ->
+            local.inputStream().use { input ->
+                val buffer = ByteArray(1 shl 20)
+                var offset = 0L
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n <= 0) break
+                    var written = 0
+                    while (written < n) {
+                        written += out.write(buffer, offset + written, written, n - written).toInt()
+                    }
+                    offset += n
+                    onProgress(offset)
+                }
+            }
+        }
+    }
+
     fun list(loc: SmbLocation): List<SmbEntry> = withShare(loc) { share ->
         val base = loc.path.trim('/')
         share.list(loc.smbPath).mapNotNull { info ->

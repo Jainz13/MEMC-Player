@@ -1,6 +1,10 @@
 package com.jainz.memc
 
+import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
+import com.jainz.memc.torrent.TorrentEngine
+import com.jainz.memc.ui.torrents.SourcesScreen
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -58,6 +62,26 @@ class MainActivity : ComponentActivity() {
         )
         super.onCreate(savedInstanceState)
         setContent { MemcTheme { AppRoot() } }
+        handleTorrentIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleTorrentIntent(intent)
+    }
+
+    /** Magnet links and .torrent files opened from a browser or file manager. */
+    private fun handleTorrentIntent(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (intent.action != Intent.ACTION_VIEW) return
+        val problem = if (data.scheme == "magnet") {
+            TorrentEngine.addMagnet(this, data.toString())
+        } else {
+            val bytes = runCatching { contentResolver.openInputStream(data)?.use { it.readBytes() } }.getOrNull()
+            if (bytes == null) "Could not read that file" else TorrentEngine.addTorrentFile(this, bytes)
+        }
+        Toast.makeText(this, problem ?: "Torrent added - see Library → Torrents", Toast.LENGTH_LONG).show()
+        intent.data = null
     }
 
     override fun onResume() {
@@ -89,6 +113,7 @@ object Routes {
     const val SEARCH = "search"
     const val SETTINGS = "settings"
     const val UNIDENTIFIED = "unidentified"
+    const val SOURCES = "sources"
     fun movie(id: Long) = "movie/$id"
     fun show(id: Long) = "show/$id"
     fun folder(sourceId: Long, folder: String) = "folder/$sourceId?f=" + android.net.Uri.encode(folder)
@@ -143,6 +168,7 @@ private fun AppRoot() {
                 composable(Routes.SEARCH) { SearchScreen(nav) }
                 composable(Routes.SETTINGS) { SettingsScreen(nav) }
                 composable(Routes.UNIDENTIFIED) { UnidentifiedScreen(nav) }
+                composable(Routes.SOURCES) { SourcesScreen(nav) }
                 composable(
                     "movie/{id}",
                     arguments = listOf(navArgument("id") { type = NavType.LongType }),

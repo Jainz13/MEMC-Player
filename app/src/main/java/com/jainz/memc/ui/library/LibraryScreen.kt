@@ -73,6 +73,7 @@ import com.jainz.memc.ui.components.Artwork
 import com.jainz.memc.ui.components.CardShape
 import com.jainz.memc.ui.components.EmptyMessage
 import com.jainz.memc.ui.components.DownloadsSection
+import com.jainz.memc.ui.torrents.TorrentsSection
 import com.jainz.memc.ui.components.ExportsSection
 import com.jainz.memc.ui.components.FixMatchDialog
 import com.jainz.memc.ui.components.ProgressStrip
@@ -113,6 +114,7 @@ fun LibraryScreen(nav: NavController) {
             }
         }
 
+        item { TorrentsSection(nav) }
         item { DownloadsSection() }
         item { ExportsSection() }
 

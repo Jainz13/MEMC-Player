@@ -32,6 +32,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
+import com.jainz.memc.data.scan.StorageAccess
+import com.jainz.memc.ui.components.rememberStorageAccess
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -85,6 +94,7 @@ fun HomeScreen(nav: NavController) {
     val unidentified by remember { g.db.videos().unidentified() }.collectAsStateWithLifecycle(emptyList())
     val count by remember { g.db.videos().observeCount() }.collectAsStateWithLifecycle(-1)
     val tmdbKey by g.settings.tmdbKey.flow.collectAsStateWithLifecycle()
+    val storage = rememberStorageAccess()
     val hadCrash = remember { CrashLog.read(context) != null }
 
     val recentMovies = remember(movies) { movies.sortedByDescending { it.addedAt } }
@@ -132,8 +142,8 @@ fun HomeScreen(nav: NavController) {
                 }
             }
         }
-        if (tmdbKey.isBlank() && count > 0) {
-            item { TmdbPrompt { nav.navigate(Routes.SETTINGS) } }
+        if (tmdbKey.isBlank() && storage != StorageAccess.NONE) {
+            item { TmdbSetupCard() }
         }
 
         if (continueWatching.isNotEmpty()) {
@@ -354,22 +364,56 @@ private fun TopActions(nav: NavController, modifier: Modifier = Modifier) {
     }
 }
 
+/** Step two of set-up, shown once storage access is given: connect TMDB for posters and details. */
 @Composable
-private fun TmdbPrompt(onClick: () -> Unit) {
+private fun TmdbSetupCard() {
+    val g = MemcApp.graph
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var key by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf<String?>(null) }
     Surface(
-        onClick = onClick,
         shape = RoundedCornerShape(14.dp),
         color = Palette.Surface,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
-        Column(Modifier.padding(16.dp)) {
-            Text("Get posters and details", style = MaterialTheme.typography.titleMedium)
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Connect TMDB for posters and details", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Add your free TMDB API key in Settings and the library fills in artwork, plots and cast.",
+                "1. Open TMDB and sign in (or create a free account).  2. Under Settings → API, copy the API key.  3. Paste it here.",
                 style = MaterialTheme.typography.bodySmall,
                 color = Palette.TextDim,
-                modifier = Modifier.padding(top = 4.dp),
             )
+            OutlinedButton(onClick = {
+                runCatching {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.themoviedb.org/settings/api")))
+                }
+            }) { Text("Open TMDB") }
+            OutlinedTextField(
+                value = key,
+                onValueChange = { key = it.trim(); status = null },
+                label = { Text("TMDB API key") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(enabled = key.isNotBlank(), onClick = {
+                    scope.launch {
+                        status = "Checking…"
+                        val previous = g.settings.tmdbKey.value
+                        g.settings.tmdbKey.set(key)
+                        val problem = g.tmdb.verifyKey()
+                        if (problem == null) {
+                            g.db.videos().retryNotFound()
+                            ScanWorker.enqueue(context)
+                        } else {
+                            g.settings.tmdbKey.set(previous)
+                            status = problem
+                        }
+                    }
+                }) { Text("Connect") }
+                status?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Palette.TextDim) }
+            }
         }
     }
 }

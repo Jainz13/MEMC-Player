@@ -7,6 +7,7 @@ import coil3.PlatformContext
 import coil3.SingletonImageLoader
 import coil3.request.crossfade
 import com.jainz.memc.core.CrashLog
+import com.jainz.memc.torrent.TorrentEngine
 import com.jainz.memc.core.Settings
 import com.jainz.memc.data.db.AppDatabase
 import com.jainz.memc.data.scan.ScanWorker
@@ -36,6 +37,13 @@ class MemcApp : Application(), SingletonImageLoader.Factory {
         CrashLog.install(this)
         instance = this
         graph = AppGraph(this)
+        if (TorrentEngine.hasSaved(this)) {
+            runCatching {
+                androidx.core.content.ContextCompat.startForegroundService(
+                    this, android.content.Intent(this, com.jainz.memc.torrent.TorrentService::class.java),
+                )
+            }
+        }
         if (graph.settings.scanOnStart.value) {
             ScanWorker.enqueue(this, onlyIfStale = true)
         }

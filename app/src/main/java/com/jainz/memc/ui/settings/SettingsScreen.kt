@@ -89,6 +89,10 @@ fun SettingsScreen(nav: NavController) {
     val subLang by st.subtitleLanguage.flow.collectAsStateWithLifecycle()
     val memcFps by st.memcTargetFps.flow.collectAsStateWithLifecycle()
     val memcOn by st.memcEnabled.flow.collectAsStateWithLifecycle()
+    val torrentWifi by st.torrentWifiOnly.flow.collectAsStateWithLifecycle()
+    val moveSource by st.torrentMoveSource.flow.collectAsStateWithLifecycle()
+    val moveFolder by st.torrentMoveFolder.flow.collectAsStateWithLifecycle()
+    val shares by remember { g.db.sources().observeAll() }.collectAsStateWithLifecycle(emptyList())
     val npuExport by st.npuExport.flow.collectAsStateWithLifecycle()
     var npuState by remember { mutableStateOf(NpuFlow.state(context)) }
     val hdrBoost by st.hdrBoost.flow.collectAsStateWithLifecycle()
@@ -226,6 +230,47 @@ fun SettingsScreen(nav: NavController) {
                             ScanWorker.enqueue(context, scrapeOnly = true)
                         }
                     }) { Text("Refresh all details") }
+                }
+            }
+        }
+
+        // ---- Torrents ----
+        item { SectionTitle("Torrents", Modifier.padding(top = 12.dp)) }
+        item {
+            Card {
+                ToggleRow("Download on Wi-Fi only", "Pauses torrents on mobile data", torrentWifi) { st.torrentWifiOnly.set(it) }
+                Text("When a torrent finishes", style = MaterialTheme.typography.bodyMedium)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    item {
+                        FilterChip(selected = moveSource == 0L, onClick = { st.torrentMoveSource.set(0L) }, label = { Text("Keep on phone") })
+                    }
+                    items(shares) { share ->
+                        FilterChip(
+                            selected = moveSource == share.id,
+                            onClick = { st.torrentMoveSource.set(share.id) },
+                            label = { Text("Move to ${share.name}") },
+                        )
+                    }
+                }
+                if (moveSource != 0L) {
+                    OutlinedTextField(
+                        value = moveFolder,
+                        onValueChange = { st.torrentMoveFolder.set(it) },
+                        label = { Text("Folder on the share") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        "Files are copied to the share, then removed from the phone. If the share can't be reached they stay on the phone.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Palette.TextFaint,
+                    )
+                } else if (shares.isEmpty()) {
+                    Text(
+                        "Add a network share in Library to be able to move finished torrents there.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Palette.TextFaint,
+                    )
                 }
             }
         }

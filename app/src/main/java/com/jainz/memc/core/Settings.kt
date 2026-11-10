@@ -82,6 +82,14 @@ class Settings(context: Context) {
     /** ISO language code, "" = device language */
     val subtitleLanguage = string("subtitle_language", "")
 
+    // ---- Torrents ----
+    /** Only download on Wi-Fi / unmetered networks. */
+    val torrentWifiOnly = bool("torrent_wifi_only", true)
+    /** Share to move finished torrents to (source id), 0 = keep them on the phone. */
+    val torrentMoveSource = long("torrent_move_source", 0L)
+    /** Folder inside that share. */
+    val torrentMoveFolder = string("torrent_move_folder", "Downloads")
+
     // ---- Picture ----
     /** 0..100: brightness boost (colour-preserving) */
     val hdrBoost = int("hdr_boost", 0)
