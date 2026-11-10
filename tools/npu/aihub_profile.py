@@ -10,8 +10,11 @@ import json
 import os
 import traceback
 
-RUNTIMES = ["qnn_context_binary", "tflite"]
-EXT = {"qnn_context_binary": ".bin", "tflite": ".tflite"}
+# qnn_dlc / precompiled_qnn_onnx run through Qualcomm's own runtime, which has a native
+# GridSample (warp) operator. TFLite was measured once: all layers on the NPU but 338 ms at
+# 640x352, and the 448x256 build failed to run, so it is no longer tested.
+RUNTIMES = ["qnn_dlc", "precompiled_qnn_onnx"]
+EXT = {"qnn_dlc": ".dlc", "precompiled_qnn_onnx": ".onnx.zip", "tflite": ".tflite"}
 
 
 def pick_device(hub):

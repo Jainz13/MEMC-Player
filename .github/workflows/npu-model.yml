@@ -63,5 +63,5 @@ jobs:
             out/results.json
             out/models.json
             out/*.onnx
-            out/*.bin
-            out/*.tflite
+            out/*.dlc
+            out/*.onnx.zip
