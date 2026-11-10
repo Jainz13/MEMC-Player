@@ -3,6 +3,10 @@ name: Build APK
 on:
   push:
     branches: [main]
+    # Model-conversion tooling doesn't change the app.
+    paths-ignore:
+      - "tools/**"
+      - ".github/workflows/npu-model.yml"
   workflow_dispatch:
 
 permissions:

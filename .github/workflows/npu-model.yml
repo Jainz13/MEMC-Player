@@ -1,0 +1,67 @@
+name: NPU model (RIFE for Snapdragon)
+
+# Converts RIFE's flow network to ONNX, then compiles and times it on a real Galaxy S24 Ultra
+# through Qualcomm AI Hub. Results are published to the "npu-model" pre-release.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "tools/npu/**"
+      - ".github/workflows/npu-model.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: npu-model
+  cancel-in-progress: true
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tools
+        run: |
+          pip install -q torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -q numpy onnx onnxruntime onnxsim qai-hub
+
+      - name: Export RIFE to ONNX
+        run: python tools/npu/export_rife.py --out out --work work
+
+      - name: Compile and profile on AI Hub
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
+        run: |
+          if [ -n "$QAI_HUB_API_TOKEN" ]; then
+            qai-hub configure --api_token "$QAI_HUB_API_TOKEN" > /dev/null
+          else
+            echo "::warning::Secret QAI_HUB_API_TOKEN is not set - skipping the phone test."
+          fi
+          python tools/npu/aihub_profile.py --dir out
+          cat out/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish results
+        if: always()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: npu-model
+          name: NPU model build (not an app release)
+          prerelease: true
+          make_latest: false
+          body: Converted RIFE flow models and their Snapdragon NPU test report. See report.md.
+          files: |
+            out/report.md
+            out/results.json
+            out/models.json
+            out/*.onnx
+            out/*.bin
+            out/*.tflite
