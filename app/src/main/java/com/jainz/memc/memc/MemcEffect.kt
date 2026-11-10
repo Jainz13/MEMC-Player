@@ -5,6 +5,7 @@ import androidx.media3.common.VideoFrameProcessingException
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.GlEffect
 import androidx.media3.effect.GlShaderProgram
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Live controls shared between the UI and the GL thread. Changing them takes effect on the
@@ -16,17 +17,81 @@ class MemcControl(enabled: Boolean, targetFps: Int, quality: Int) {
     /** 0 = battery saver, 1 = balanced, 2 = best */
     @Volatile var quality: Int = quality
 
-    /** Updated by the engine: the source frame rate it measured, and whether it is interpolating. */
+    /**
+     * Long side of the screen in pixels. Frames are processed no larger than this (a 4K film on
+     * a 1440p screen is shown at 1440p anyway). 0 = no limit (export).
+     */
+    @Volatile var maxLongSide: Int = 0
+    /** Let the engine ease its workload when it can't keep up in real time (playback only). */
+    @Volatile var adaptive: Boolean = true
+    @Volatile var playbackSpeed: Float = 1f
+
+    // ---- Status, written by the engine ----
     @Volatile var sourceFps: Float = 0f
     @Volatile var active: Boolean = false
+    /** 0 = as configured … 4 = interpolation paused because the phone can't keep up. */
+    @Volatile var easeLevel: Int = 0
+    @Volatile var procWidth: Int = 0
+    @Volatile var procHeight: Int = 0
+    /** Frames the engine may render ahead of the screen. */
+    @Volatile var bufferFrames: Int = 0
+
+    private val easeRequests = AtomicInteger()
+
+    /** Called by the player when it had to drop late frames. */
+    fun requestEase() {
+        easeRequests.incrementAndGet()
+    }
+
+    internal fun takeEaseRequest(): Boolean {
+        while (true) {
+            val n = easeRequests.get()
+            if (n <= 0) return false
+            if (easeRequests.compareAndSet(n, 0)) return true
+        }
+    }
+
+    /** Processing-size limit for the current quality and ease level. */
+    internal fun longSideCap(): Int {
+        val screen = maxLongSide
+        if (screen <= 0) return Int.MAX_VALUE
+        val base = when (quality.coerceIn(0, 2)) {
+            0 -> 1920
+            1 -> 2560
+            else -> screen
+        }
+        val eased = when (easeLevel) {
+            0 -> Int.MAX_VALUE
+            1 -> 1920
+            2 -> 1600
+            else -> 1280
+        }
+        return minOf(base, eased, screen).coerceAtLeast(640)
+    }
+
+    internal fun effectiveQuality(): Int = if (easeLevel >= 1) 0 else quality.coerceIn(0, 2)
+
+    /** Output rate actually in use (the governor may hold 120 fps down to 60). */
+    fun effectiveFps(): Int = effectiveTargetFps()
+
+    internal fun effectiveTargetFps(): Int {
+        val t = targetFps.coerceIn(24, 240)
+        return if (easeLevel >= 2) minOf(t, 60) else t
+    }
 }
 
-/** Media3 video effect that raises the frame rate with motion-compensated interpolation. */
+/**
+ * Media3 video effect: picture adjustments (boost / Auto HDR) and motion-compensated frame
+ * interpolation in one stage, so a frame is only touched once at full size.
+ */
 @UnstableApi
-class MemcEffect(private val control: MemcControl) : GlEffect {
+class MemcEffect(
+    private val control: MemcControl,
+    private val picture: PictureControl? = null,
+) : GlEffect {
     override fun toGlShaderProgram(context: Context, useHdr: Boolean): GlShaderProgram =
         try {
-            MemcShaderProgram(context, useHdr, control)
+            MemcShaderProgram(context, useHdr, control, picture)
         } catch (e: Exception) {
             throw VideoFrameProcessingException(e)
         }

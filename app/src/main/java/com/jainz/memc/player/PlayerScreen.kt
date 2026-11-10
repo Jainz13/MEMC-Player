@@ -825,13 +825,18 @@ private fun VideoTab(
         LaunchedEffect(Unit) {
             while (true) {
                 val hdrVideo = PlayerState.hdrLabel(state.videoFormat)?.let { it != "Auto HDR" } == true
+                val pipeline = when (picture.pipelineHdr) {
+                    null -> "pipeline not running"
+                    true -> "HDR pipeline"
+                    false -> "SDR pipeline"
+                }
                 pictureStatus = when {
                     !memcAvailable -> "Not available for this video"
-                    picture.fakedHdr -> "Screen in HDR mode · SDR white at ${picture.sdrWhiteNits.roundToInt()} nits, highlights up to ${picture.sdrPeakNits.roundToInt()}"
+                    picture.fakedHdr -> "Auto HDR · SDR white at ${picture.sdrWhiteNits.roundToInt()} nits, highlights up to ${picture.sdrPeakNits.roundToInt()}"
                     hdrVideo && picture.boost > 0f -> "HDR video · brightness ×${String.format(java.util.Locale.US, "%.1f", 1f + 0.8f * picture.boost)} (soft roll-off at the top)"
-                    picture.boost > 0f -> "Applies when you let go of the slider (the video restarts once to switch the screen to HDR)"
+                    picture.boost > 0f -> "SDR video · brighter picture and backlight raised"
                     else -> "Off"
-                }
+                } + "  [$pipeline, mode ${picture.lastMode}]"
                 delay(500)
             }
         }
@@ -841,15 +846,15 @@ private fun VideoTab(
             color = if (picture.fakedHdr || picture.boost > 0f) Palette.Accent else Palette.TextDim,
         )
         Text(
-            "Raises light levels while keeping each colour's hue and saturation, so it doesn't wash out. On SDR videos it switches the screen to HDR mode, the only way the panel can go brighter than normal white.",
+            "Raises light levels while keeping each colour's hue and saturation, so it doesn't wash out, and turns the screen backlight up with it. If boost was off when the video started, the video restarts once at the same spot.",
             style = MaterialTheme.typography.bodySmall,
             color = Palette.TextFaint,
         )
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
             Column(Modifier.weight(1f)) {
-                Text("Auto HDR (beta)", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                Text("Auto HDR (experimental)", style = MaterialTheme.typography.bodyMedium, color = Color.White)
                 Text(
-                    "Turns SDR videos into HDR10 so the screen runs in HDR mode. Switching restarts the video.",
+                    "Turns SDR videos into HDR10 so the screen runs in HDR mode. Colours were wrong on some videos in testing: switch it off if the picture looks odd. Switching restarts the video.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Palette.TextDim,
                 )
@@ -938,14 +943,18 @@ private fun VideoTab(
 
 private fun memcStatus(memc: MemcControl, available: Boolean): String {
     val src = memc.sourceFps
-    return when {
-        !available -> "Not available for this video (the video pipeline refused it)"
-        !memc.enabled -> "Off"
-        memc.active -> String.format(java.util.Locale.US, "Interpolating %.3f → %d fps", src, memc.targetFps)
+    val main = when {
+        !available -> return "Not available for this video (the video pipeline refused it)"
+        !memc.enabled -> return "Off"
+        memc.easeLevel >= 4 -> "Paused: the phone couldn't keep up at this resolution"
+        memc.active -> String.format(java.util.Locale.US, "Interpolating %.3f → %d fps", src, memc.effectiveFps())
         src > 0f && src >= memc.targetFps * 0.8f ->
             String.format(java.util.Locale.US, "Video is already %.0f fps - nothing to add", src)
         else -> "Starting… (measuring the video's frame rate)"
     }
+    val size = if (memc.procWidth > 0) " · ${memc.procWidth}×${memc.procHeight}, ${memc.bufferFrames}-frame buffer" else ""
+    val eased = if (memc.easeLevel in 1..3) " · eased ${memc.easeLevel}/3 to stay smooth" else ""
+    return main + size + eased
 }
 
 @UnstableApi

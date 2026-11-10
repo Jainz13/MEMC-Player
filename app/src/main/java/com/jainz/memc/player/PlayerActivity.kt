@@ -8,17 +8,19 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Rational
 import android.view.WindowManager
+import android.provider.Settings
 import android.view.Surface
 import android.view.SurfaceView
 import android.widget.Toast
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.ui.PlayerView
 import com.jainz.memc.export.ExportManager
 import com.jainz.memc.memc.MemcControl
 import com.jainz.memc.memc.MemcEffect
 import com.jainz.memc.memc.PictureControl
-import com.jainz.memc.memc.PictureEffect
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
@@ -81,7 +83,7 @@ class PlayerActivity : ComponentActivity() {
         picture = PictureControl(
             // Without the effect pipeline nothing may be flagged as HDR, or SDR colours would be wrong.
             boost = if (memcAllowed) g.settings.hdrBoost.value / 100f else 0f,
-            autoHdr = g.settings.autoHdr.value && memcAllowed,
+            autoHdr = g.settings.autoHdr.value && memcAllowed && !intent.getBooleanExtra(EXTRA_NO_AUTO_HDR, false),
         )
         player = PlayerFactory.create(this, g.smb, g.settings, picture)
         state = PlayerState(player)
@@ -90,10 +92,25 @@ class PlayerActivity : ComponentActivity() {
             targetFps = g.settings.memcTargetFps.value,
             quality = g.settings.memcQuality.value,
         )
+        // Frames are processed no larger than the screen: a 4K film on this panel is shown at
+        // the panel's resolution anyway, and it cuts the GPU work by more than half.
+        memc.maxLongSide = screenLongSide()
         // Only build the effect pipeline when something needs it, so plain playback keeps the
         // direct HDR10+ path to the display.
         if (memcAllowed && (memc.enabled || picture.boost > 0f || picture.autoHdr)) installMemc()
+        applyBoostBacklight()
+        player.addAnalyticsListener(object : AnalyticsListener {
+            // The player reports every 50 late frames it had to drop. Faster than ~4 a second
+            // means the phone isn't keeping up: ask the engine to ease its workload.
+            override fun onDroppedVideoFrames(eventTime: AnalyticsListener.EventTime, droppedFrames: Int, elapsedMs: Long) {
+                if (memcInstalled && droppedFrames * 1000L / elapsedMs.coerceAtLeast(1) >= 4) memc.requestEase()
+            }
+        })
         player.addListener(object : Player.Listener {
+            override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+                memc.playbackSpeed = playbackParameters.speed
+            }
+
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (isPlaying) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 else {
@@ -118,6 +135,7 @@ class PlayerActivity : ComponentActivity() {
             // The video format is often still unknown when tracks change; the first frame is certain.
             override fun onRenderedFirstFrame() {
                 recordTech()
+                checkAutoHdrPipeline()
             }
 
             override fun onPositionDiscontinuity(
@@ -364,12 +382,22 @@ class PlayerActivity : ComponentActivity() {
 
     // ---- MEMC -----------------------------------------------------------------------------
 
-    /** Picture adjustments first, then frame interpolation. Both pass frames through untouched when off. */
+    /**
+     * One effect does picture adjustments and frame interpolation. Media3 can only create the
+     * effect pipeline when playback starts, so this must run before the video is prepared.
+     */
     private fun installMemc() {
         if (memcInstalled) return
-        player.setVideoEffects(listOf(PictureEffect(picture), MemcEffect(memc)))
+        player.setVideoEffects(listOf(MemcEffect(memc, picture)))
         memcInstalled = true
         applyDisplayRate()
+    }
+
+    /** Restarts playback at the same position, for changes that need the pipeline rebuilt. */
+    private fun restartAtPosition() {
+        saveProgress()
+        intent.putExtra(EXTRA_START_MS, player.currentPosition)
+        recreate()
     }
 
     private fun updatePicture(boost: Float, autoHdr: Boolean) {
@@ -377,19 +405,17 @@ class PlayerActivity : ComponentActivity() {
         g.settings.autoHdr.set(autoHdr)
         picture.boost = boost
         picture.autoHdr = autoHdr
+        applyBoostBacklight()
+        if (autoHdr) intent.removeExtra(EXTRA_NO_AUTO_HDR)
         val transfer = player.videoFormat?.colorInfo?.colorTransfer
         val videoIsSdr = picture.fakedHdr ||
             (transfer != C.COLOR_TRANSFER_ST2084 && transfer != C.COLOR_TRANSFER_HLG)
-        val wantConvert = autoHdr || boost > 0f
-        if (videoIsSdr && wantConvert != picture.convertSdr) {
-            // SDR video: switching the screen into (or out of) HDR mode means re-reading the
-            // video with different colour flags - restart at the same spot.
-            saveProgress()
-            intent.putExtra(EXTRA_START_MS, player.currentPosition)
-            recreate()
-            return
+        val needsPipeline = boost > 0f || autoHdr
+        when {
+            // Auto HDR re-reads the video with different colour flags.
+            videoIsSdr && autoHdr != picture.convertSdr -> restartAtPosition()
+            needsPipeline && !memcInstalled -> restartAtPosition()
         }
-        if (boost > 0f || autoHdr) installMemc()
     }
 
     private fun updateMemc(enabled: Boolean, fps: Int, quality: Int) {
@@ -399,8 +425,47 @@ class PlayerActivity : ComponentActivity() {
         memc.targetFps = fps
         memc.quality = quality
         memc.enabled = enabled
-        if (enabled) installMemc()
+        if (enabled && !memcInstalled) {
+            restartAtPosition()
+            return
+        }
         applyDisplayRate()
+    }
+
+    /**
+     * Boost also raises the screen backlight towards maximum, the one brightness gain that
+     * costs no picture quality. It never dims below the phone's current brightness.
+     */
+    private fun applyBoostBacklight() {
+        val boost = picture.boost
+        if (boost <= 0f) return
+        val lp = window.attributes
+        val current = if (lp.screenBrightness in 0f..1f) lp.screenBrightness else runCatching {
+            Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255f
+        }.getOrDefault(0.5f).coerceIn(0f, 1f)
+        lp.screenBrightness = (current + (1f - current) * boost).coerceIn(0.01f, 1f)
+        window.attributes = lp
+    }
+
+    private fun screenLongSide(): Int {
+        val (w, h) = if (Build.VERSION.SDK_INT >= 30) {
+            windowManager.maximumWindowMetrics.bounds.let { it.width() to it.height() }
+        } else {
+            resources.displayMetrics.let { it.widthPixels to it.heightPixels }
+        }
+        return maxOf(w, h).coerceAtLeast(1280)
+    }
+
+    /**
+     * Auto HDR needs the pipeline to run in HDR. If this phone gave it an SDR pipeline instead,
+     * the picture would be wrong: turn Auto HDR off for this video and restart.
+     */
+    fun checkAutoHdrPipeline() {
+        if (picture.fakedHdr && picture.pipelineHdr == false && !isFinishing) {
+            intent.putExtra(EXTRA_NO_AUTO_HDR, true)
+            Toast.makeText(this, "Auto HDR isn't supported for this video - playing normally", Toast.LENGTH_LONG).show()
+            restartAtPosition()
+        }
     }
 
     /**
@@ -519,5 +584,6 @@ class PlayerActivity : ComponentActivity() {
         const val EXTRA_FROM_START = "from_start"
         const val EXTRA_NO_MEMC = "no_memc"
         const val EXTRA_START_MS = "start_ms"
+        const val EXTRA_NO_AUTO_HDR = "no_auto_hdr"
     }
 }

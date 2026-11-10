@@ -16,25 +16,28 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * Motion-compensated frame interpolation (MEMC) on the GPU.
+ * Picture adjustments and motion-compensated frame interpolation (MEMC) on the GPU.
  *
  * For every new source frame:
- *  1. copy it, and make a small grey-scale version for motion search (320-640 px wide);
- *  2. block-match against the previous frame: full search at half that size, then a ±2 px
- *     refinement at full search size seeded by neighbouring vectors, then a 3x3 vector median;
- *  3. emit frames on the target-fps time grid (e.g. every 16.7 ms for 60 fps). Grid points
- *     between two source frames are interpolated by following the motion vectors into both
- *     frames; unreliable areas fall back to the nearest real frame instead of smearing.
+ *  1. ingest it once: scale down to at most the screen's resolution and apply the picture
+ *     shader (boost / Auto HDR) in the same pass;
+ *  2. make a small grey-scale copy and block-match it against the previous frame
+ *     (coarse full search, seeded refinement, 3x3 vector median);
+ *  3. emit frames on the target-fps time grid. Grid points between two source frames are
+ *     interpolated by following the motion vectors into both frames; unreliable areas fall
+ *     back to the nearest real frame instead of smearing.
  *
- * Motion is only searched at low resolution, which keeps GPU load (and heat) low; only the
- * final warp runs at full resolution. Frames are emitted with their own timestamps, so the
- * player schedules them against the audio clock and A/V sync is unaffected.
+ * Frames are emitted with their own timestamps into a pool of output textures. The pool is the
+ * pre-render buffer: the engine works ahead of the screen until the pool is full, which absorbs
+ * short spikes. If it still can't keep up, a governor lowers the processing size step by step
+ * and finally pauses interpolation rather than letting playback stutter.
  */
 @UnstableApi
 class MemcShaderProgram(
     context: Context,
     private val useHdr: Boolean,
     private val control: MemcControl,
+    private val picture: PictureControl?,
 ) : GlShaderProgram {
 
     private class Job(val alpha: Float, val ptsUs: Long, val interpolate: Boolean)
@@ -45,6 +48,7 @@ class MemcShaderProgram(
     private var errorExecutor: Executor = Executor { it.run() }
 
     private val copyProgram = program(context, "copy.frag")
+    private val pictureProgram = if (picture != null) program(context, "picture.frag") else null
     private val lumaProgram = program(context, "luma.frag")
     private val searchProgram = program(context, "search.frag")
     private val refineProgram = program(context, "refine.frag")
@@ -52,8 +56,8 @@ class MemcShaderProgram(
     private val interpProgram = program(context, "interp.frag")
 
     // Resources, sized for the current video.
-    private var width = 0
-    private var height = 0
+    private var procW = 0
+    private var procH = 0
     private var allocatedQuality = -1
     private var workW = 0
     private var workH = 0
@@ -65,6 +69,10 @@ class MemcShaderProgram(
     private var mvSmooth: GlTextureInfo? = null
     private val outputs = ArrayList<GlTextureInfo>()
     private val freeOutputs = ArrayDeque<GlTextureInfo>()
+    /** Output textures currently held by the display pipeline. */
+    private val inFlight = HashSet<GlTextureInfo>()
+    /** In-flight textures of an old size; deleted when they come back. */
+    private val retired = HashSet<GlTextureInfo>()
 
     // Frame state.
     private var held = 0
@@ -76,9 +84,18 @@ class MemcShaderProgram(
     private var readySignalled = false
     private var endOfStreamPending = false
 
+    // Governor state.
+    private var lastWallNs = 0L
+    private val behind = ArrayDeque<Boolean>()
+    private var cooldown = GOVERNOR_WINDOW
+
     private val coeffs = if (useHdr) floatArrayOf(0.2627f, 0.6780f, 0.0593f) else floatArrayOf(0.2126f, 0.7152f, 0.0722f)
     // Media3's HDR working space is linear with 1.0 = 1000 nits; bring ~100 nits to ~1.
     private val lumaScale = if (useHdr) 10f else 3f
+
+    init {
+        picture?.pipelineHdr = useHdr
+    }
 
     // ---- GlShaderProgram -------------------------------------------------------------
 
@@ -99,25 +116,44 @@ class MemcShaderProgram(
 
     override fun queueInputFrame(glObjectsProvider: GlObjectsProvider, inputTexture: GlTextureInfo, presentationTimeUs: Long) {
         readySignalled = false
-        // Never let a new frame overwrite history that queued jobs still need.
         jobs.clear()
         try {
+            val previousPts = lastPtsUs
+            val dt = if (previousPts != C.TIME_UNSET) presentationTimeUs - previousPts else -1L
+            noteTiming(dt)
+            govern(dt)
             ensureResources(inputTexture.width, inputTexture.height)
             GLES20.glDisable(GLES20.GL_BLEND)
 
-            val slot = if (held == 0) 0 else 1 - cur
-            drawCopy(inputTexture, frames[slot]!!)
-            drawLuma(frames[slot]!!, lumaFine[slot]!!)
-            drawCopy(lumaFine[slot]!!, lumaCoarse[slot]!!)
-            inputListener.onInputFrameProcessed(inputTexture)
-
-            val hadPrevious = held > 0
-            val previousPts = lastPtsUs
-            prev = cur
-            cur = slot
-            held = min(2, held + 1)
+            val target = control.effectiveTargetFps()
+            val interpolate = control.enabled && control.easeLevel < MAX_EASE && dt in VALID_DT &&
+                control.sourceFps > 0f && control.sourceFps < target * 0.8f
+            control.active = interpolate
             lastPtsUs = presentationTimeUs
-            plan(hadPrevious, previousPts, presentationTimeUs)
+
+            if (!interpolate && freeOutputs.isNotEmpty()) {
+                // Nothing to interpolate: one pass straight into an output frame.
+                val out = freeOutputs.removeFirst()
+                ingest(inputTexture, out)
+                inputListener.onInputFrameProcessed(inputTexture)
+                held = 0
+                emit(out, presentationTimeUs)
+            } else {
+                val slot = if (held == 0) 0 else 1 - cur
+                ingest(inputTexture, frames[slot]!!)
+                inputListener.onInputFrameProcessed(inputTexture)
+                drawLuma(frames[slot]!!, lumaFine[slot]!!)
+                drawCopy(lumaFine[slot]!!, lumaCoarse[slot]!!)
+                val hadPrevious = held > 0
+                prev = cur
+                cur = slot
+                held = min(2, held + 1)
+                if (interpolate && hadPrevious) {
+                    plan(previousPts, presentationTimeUs, dt, target)
+                } else {
+                    jobs.addLast(Job(1f, presentationTimeUs, false))
+                }
+            }
         } catch (e: Exception) {
             fail(e)
             return
@@ -126,7 +162,12 @@ class MemcShaderProgram(
     }
 
     override fun releaseOutputFrame(outputTexture: GlTextureInfo) {
-        freeOutputs.addLast(outputTexture)
+        if (!inFlight.remove(outputTexture)) return
+        if (retired.remove(outputTexture)) {
+            runCatching { outputTexture.release() }
+        } else {
+            freeOutputs.addLast(outputTexture)
+        }
         drain()
     }
 
@@ -134,6 +175,8 @@ class MemcShaderProgram(
         held = 0
         lastPtsUs = C.TIME_UNSET
         recentDeltas.clear()
+        resetGovernor()
+        control.easeLevel = 0
         if (jobs.isEmpty()) outputListener.onCurrentOutputStreamEnded() else endOfStreamPending = true
     }
 
@@ -143,6 +186,11 @@ class MemcShaderProgram(
         held = 0
         lastPtsUs = C.TIME_UNSET
         recentDeltas.clear()
+        resetGovernor()
+        // After a flush the display pipeline has dropped every frame it held.
+        retired.forEach { runCatching { it.release() } }
+        retired.clear()
+        inFlight.clear()
         freeOutputs.clear()
         freeOutputs.addAll(outputs)
         inputListener.onFlush()
@@ -152,39 +200,70 @@ class MemcShaderProgram(
 
     override fun release() {
         try {
-            releaseResources()
-            listOf(copyProgram, lumaProgram, searchProgram, refineProgram, smoothProgram, interpProgram).forEach { it.delete() }
+            releaseFrameTextures()
+            releaseSearchTextures()
+            retired.forEach { runCatching { it.release() } }
+            retired.clear()
+            listOfNotNull(copyProgram, pictureProgram, lumaProgram, searchProgram, refineProgram, smoothProgram, interpProgram)
+                .forEach { it.delete() }
         } catch (e: GlUtil.GlException) {
             throw VideoFrameProcessingException(e)
         }
     }
 
+    // ---- Timing and load governor ------------------------------------------------------------
+
+    private fun noteTiming(dt: Long) {
+        if (dt !in VALID_DT) return
+        recentDeltas.addLast(dt)
+        if (recentDeltas.size > 9) recentDeltas.removeFirst()
+        val sorted = recentDeltas.sorted()
+        control.sourceFps = 1_000_000f / sorted[sorted.size / 2]
+    }
+
+    /**
+     * Detects "can't keep up": frames take longer to produce than they last on screen while the
+     * pre-render buffer is empty. Sustained for ~2 seconds, the workload is eased one step.
+     */
+    private fun govern(dtUs: Long) {
+        if (!control.adaptive || control.maxLongSide <= 0) return
+        val now = System.nanoTime()
+        val last = lastWallNs
+        lastWallNs = now
+        val requested = control.takeEaseRequest()
+        if (cooldown > 0) {
+            cooldown--
+            return
+        }
+        if (requested) {
+            ease()
+            return
+        }
+        if (last == 0L || dtUs !in VALID_DT || outputs.isEmpty()) return
+        val expectedNs = dtUs * 1000.0 / control.playbackSpeed.coerceIn(0.25f, 4f)
+        val ratio = (now - last) / expectedNs
+        val bufferEmpty = freeOutputs.size * 2 >= outputs.size
+        behind.addLast(ratio > 1.08 && ratio < 4.0 && bufferEmpty)
+        if (behind.size > GOVERNOR_WINDOW) behind.removeFirst()
+        if (behind.size == GOVERNOR_WINDOW && behind.count { it } >= GOVERNOR_WINDOW * 3 / 4) ease()
+    }
+
+    private fun ease() {
+        if (control.easeLevel < MAX_EASE) control.easeLevel++
+        behind.clear()
+        cooldown = GOVERNOR_WINDOW * 3 / 2
+    }
+
+    private fun resetGovernor() {
+        lastWallNs = 0L
+        behind.clear()
+        cooldown = GOVERNOR_WINDOW
+    }
+
     // ---- Scheduling ----------------------------------------------------------------------
 
-    private fun plan(hadPrevious: Boolean, previousPts: Long, pts: Long) {
-        if (!hadPrevious || previousPts == C.TIME_UNSET) {
-            jobs.addLast(Job(1f, pts, false))
-            control.active = false
-            return
-        }
-        val dt = pts - previousPts
-        if (dt in 4_000..250_000) {
-            recentDeltas.addLast(dt)
-            if (recentDeltas.size > 9) recentDeltas.removeFirst()
-            val sorted = recentDeltas.sorted()
-            control.sourceFps = 1_000_000f / sorted[sorted.size / 2]
-        }
-        val target = control.targetFps.coerceIn(24, 240)
-        val interpolate = control.enabled && dt in 4_000..250_000 &&
-            control.sourceFps > 0f && control.sourceFps < target * 0.8f
-        control.active = interpolate
-        if (!interpolate) {
-            jobs.addLast(Job(1f, pts, false))
-            return
-        }
-
+    private fun plan(previousPts: Long, pts: Long, dt: Long, target: Int) {
         runMotionSearch()
-
         // Output grid: k / target seconds, strictly after the previous frame, up to this one.
         val kStart = Math.floorDiv(previousPts * target, 1_000_000L) + 1
         val kEnd = Math.floorDiv(pts * target, 1_000_000L)
@@ -197,6 +276,7 @@ class MemcShaderProgram(
             }
             k++
         }
+        if (jobs.isEmpty()) jobs.addLast(Job(1f, pts, false))
     }
 
     private fun drain() {
@@ -205,7 +285,7 @@ class MemcShaderProgram(
                 val job = jobs.removeFirst()
                 val out = freeOutputs.removeFirst()
                 if (job.interpolate) drawInterp(out, job.alpha) else drawCopy(frames[cur]!!, out)
-                outputListener.onOutputFrameAvailable(out, job.ptsUs)
+                emit(out, job.ptsUs)
             }
         } catch (e: Exception) {
             fail(e)
@@ -223,7 +303,36 @@ class MemcShaderProgram(
         }
     }
 
+    private fun emit(out: GlTextureInfo, ptsUs: Long) {
+        inFlight.add(out)
+        outputListener.onOutputFrameAvailable(out, ptsUs)
+    }
+
     // ---- Passes -------------------------------------------------------------------------------
+
+    /** First touch of a source frame: scale to the processing size and apply picture settings. */
+    private fun ingest(src: GlTextureInfo, dst: GlTextureInfo) {
+        val pic = picture
+        val prog = pictureProgram
+        if (pic != null && prog != null && pic.needsShader(useHdr)) {
+            val mode = when {
+                !useHdr -> 0
+                pic.fakedHdr -> 2
+                else -> 1
+            }
+            pic.lastMode = mode
+            draw(dst, prog) { p ->
+                p.setSamplerTexIdUniform("uTex", src.texId, 0)
+                p.setIntUniform("uMode", mode)
+                p.setFloatUniform("uBoost", pic.boost.coerceIn(0f, 1f))
+                p.setFloatUniform("uSdrWhiteNits", pic.sdrWhiteNits)
+                p.setFloatUniform("uPeakNits", if (mode == 2) pic.sdrPeakNits else BOOST_PEAK_NITS)
+            }
+        } else {
+            pic?.lastMode = if (useHdr) 1 else 0
+            drawCopy(src, dst)
+        }
+    }
 
     private fun runMotionSearch() {
         val q = allocatedQuality
@@ -297,28 +406,42 @@ class MemcShaderProgram(
 
     // ---- Resources ------------------------------------------------------------------------------
 
-    private fun ensureResources(w: Int, h: Int) {
-        val quality = control.quality.coerceIn(0, 2)
-        if (w != width || h != height || frames[0] == null) {
-            // New video size (new stream): rebuild everything.
+    private fun ensureResources(inW: Int, inH: Int) {
+        val cap = control.longSideCap()
+        val long = max(inW, inH)
+        val scale = if (long > cap) cap.toFloat() / long else 1f
+        val pw = even(inW * scale)
+        val ph = even(inH * scale)
+        if (pw != procW || ph != procH || frames[0] == null) {
+            // New video or new processing size: rebuild the frame textures. Output frames the
+            // display still holds are deleted when they come back.
             releaseFrameTextures()
             releaseSearchTextures()
-            width = w
-            height = h
-            for (i in 0..1) frames[i] = texture(w, h, useHdr)
-            repeat(OUTPUT_FRAMES) { outputs += texture(w, h, useHdr) }
+            procW = pw
+            procH = ph
+            for (i in 0..1) frames[i] = texture(pw, ph, useHdr)
+            val bytesPerFrame = pw.toLong() * ph * (if (useHdr) 8 else 4)
+            val count = (POOL_BUDGET_BYTES / bytesPerFrame).toInt().coerceIn(MIN_POOL, MAX_POOL)
+            repeat(count) { outputs += texture(pw, ph, useHdr) }
             freeOutputs.addAll(outputs)
             held = 0
+            control.procWidth = pw
+            control.procHeight = ph
+            control.bufferFrames = count
         }
+        val quality = control.effectiveQuality()
         if (quality != allocatedQuality || mvSmooth == null) {
-            // Quality change: only the small motion-search buffers; output frames that the
-            // display may still be holding are left alone.
             releaseSearchTextures()
             allocatedQuality = quality
             // Motion search size: multiples of 16 so both pyramid levels divide into 8-px blocks.
             val wanted = when (quality) { 0 -> 320; 2 -> 640; else -> 480 }
-            workW = roundTo16(min(wanted, max(64, w)))
-            workH = roundTo16(max(32, (workW.toFloat() * h / w).roundToInt()))
+            if (pw >= ph) {
+                workW = roundTo16(min(wanted, max(64, pw)))
+                workH = roundTo16(max(32, (workW.toFloat() * ph / pw).roundToInt()))
+            } else {
+                workH = roundTo16(min(wanted, max(64, ph)))
+                workW = roundTo16(max(32, (workH.toFloat() * pw / ph).roundToInt()))
+            }
             for (i in 0..1) {
                 lumaFine[i] = texture(workW, workH, true)
                 lumaCoarse[i] = texture(workW / 2, workH / 2, true)
@@ -331,10 +454,14 @@ class MemcShaderProgram(
     }
 
     private fun releaseFrameTextures() {
-        (frames.toList() + outputs).filterNotNull().forEach { runCatching { it.release() } }
+        frames.filterNotNull().forEach { runCatching { it.release() } }
         frames.fill(null)
+        for (o in outputs) {
+            if (o in inFlight) retired += o else runCatching { o.release() }
+        }
         outputs.clear()
         freeOutputs.clear()
+        jobs.clear()
     }
 
     private fun releaseSearchTextures() {
@@ -347,10 +474,7 @@ class MemcShaderProgram(
         mvSmooth = null
     }
 
-    private fun releaseResources() {
-        releaseFrameTextures()
-        releaseSearchTextures()
-    }
+    private fun even(v: Float): Int = max(2, v.roundToInt() / 2 * 2)
 
     private fun texture(w: Int, h: Int, highPrecision: Boolean): GlTextureInfo {
         val tex = GlUtil.createTexture(w, h, highPrecision)
@@ -367,8 +491,14 @@ class MemcShaderProgram(
 
     companion object {
         private const val BLOCK = 8
-        /** Output textures in flight: enough to keep the display pipeline fed at 120 fps. */
-        private const val OUTPUT_FRAMES = 4
+        private val VALID_DT = 4_000L..250_000L
+        /** GPU memory for pre-rendered frames; the buffer is this divided by the frame size. */
+        private const val POOL_BUDGET_BYTES = 480L * 1024 * 1024
+        private const val MIN_POOL = 4
+        private const val MAX_POOL = 24
+        private const val GOVERNOR_WINDOW = 48
+        const val MAX_EASE = 4
+        private const val BOOST_PEAK_NITS = 1600f
 
         private fun program(context: Context, fragment: String): GlProgram =
             GlProgram(context, "memc/fullscreen.vert", "memc/$fragment").apply {

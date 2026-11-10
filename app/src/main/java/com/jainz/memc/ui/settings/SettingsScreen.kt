@@ -274,13 +274,13 @@ fun SettingsScreen(nav: NavController) {
                     valueRange = 0f..100f,
                 )
                 Text(
-                    "Raises brightness by scaling each pixel's light while keeping its hue and saturation, with a soft roll-off so highlights don't clip. Works on SDR and HDR videos.",
+                    "Raises brightness by scaling each pixel's light while keeping its hue and saturation, with a soft roll-off so highlights don't clip, and turns the backlight up with it. Works on SDR and HDR videos.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Palette.TextDim,
                 )
                 ToggleRow(
-                    "Auto HDR (beta)",
-                    "Converts SDR videos to HDR10 so the S24's screen runs in HDR mode with its extra brightness. Real HDR videos are untouched.",
+                    "Auto HDR (experimental)",
+                    "Converts SDR videos to HDR10 so the screen runs in HDR mode. Colours were wrong on some videos in testing; leave it off unless you're trying it. Real HDR videos are untouched.",
                     autoHdr,
                 ) { st.autoHdr.set(it) }
                 Text(

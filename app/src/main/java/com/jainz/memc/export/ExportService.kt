@@ -137,7 +137,8 @@ class ExportService : Service() {
 
         val g = MemcApp.graph
         // Export always uses the best quality setting: there is no real-time deadline here.
-        val effect = MemcEffect(MemcControl(enabled = true, targetFps = 60, quality = 2))
+        // Full resolution and no load governor: export has no real-time deadline.
+        val effect = MemcEffect(MemcControl(enabled = true, targetFps = 60, quality = 2).apply { adaptive = false })
         // Same colour fix as playback, so HDR files missing container colour info export as HDR10.
         val extractors = ColorFixExtractorsFactory(
             DefaultExtractorsFactory()

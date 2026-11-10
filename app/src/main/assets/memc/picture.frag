@@ -1,7 +1,8 @@
 #version 300 es
 precision highp float;
 // Picture adjustments that run before MEMC in the effect pipeline.
-//   uMode 0: SDR video  - brightness boost (colour-preserving, soft highlight roll-off)
+//   uMode 0: SDR video  - brightness boost on the gamma-encoded BT.709 picture
+//                         (colour-preserving, soft highlight roll-off)
 //   uMode 1: HDR video  - brightness boost in nits with a soft knee towards the panel peak
 //   uMode 2: Auto HDR   - the SDR video was flagged as PQ BT.2020 so the pipeline runs in HDR;
 //                         undo that decoding, recover the original BT.709 picture, and expand
@@ -75,8 +76,10 @@ void main() {
             float boosted = softKnee(nits * (1.0 + 0.8 * uBoost), 400.0, uPeakNits);
             rgb = scaleTo(rgb, nits, boosted);
         } else {
+            // SDR frames are gamma-encoded here. Scaling R'G'B' together keeps hue and
+            // saturation; x1.5 on the encoded signal is about x2.4 in light for mid-tones.
             float y = dot(rgb, K709);
-            float boosted = softKnee(y * (1.0 + 0.6 * uBoost), 0.75, 1.0);
+            float boosted = softKnee(y * (1.0 + 0.5 * uBoost), 0.80, 1.0);
             rgb = scaleTo(rgb, y, boosted);
             float m = max(max(rgb.r, rgb.g), rgb.b);
             if (m > 1.0) rgb /= m;   // keep the hue when a channel would clip
