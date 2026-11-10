@@ -66,9 +66,15 @@ class NpuFlow private constructor(
     }
 
     companion object {
-        const val ASSET = "npu/rife_640x352.onnx"
-        const val WIDTH = 640
-        const val HEIGHT = 352
+        /** A bundled model: asset path and input size. */
+        class Model(val name: String, val width: Int, val height: Int) {
+            val asset get() = "npu/$name.onnx"
+        }
+
+        /** Larger input: finer motion, 35 ms per frame on the S24 Ultra. Used for export. */
+        val EXPORT = Model("rife_640x352", 640, 352)
+        /** Smaller input: 17 ms per frame. Used for live playback. */
+        val LIVE = Model("rife_448x256", 448, 256)
         private const val PREFS = "npu_state"
 
         fun floats(count: Int): FloatBuffer =
@@ -82,32 +88,33 @@ class NpuFlow private constructor(
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("state", state).commit()
         }
 
-        fun hasModel(context: Context): Boolean =
-            runCatching { context.assets.open(ASSET).use { true } }.getOrDefault(false)
+        fun hasModel(context: Context, m: Model): Boolean =
+            runCatching { context.assets.open(m.asset).use { true } }.getOrDefault(false)
 
         /**
          * Loads the model on the NPU and runs it once as a test. Throws with a readable message
          * if the NPU can't be used. If a previous attempt crashed the app, it refuses to try again
          * until the state is reset in Settings.
          */
-        fun create(context: Context): NpuFlow {
+        @Synchronized
+        fun create(context: Context, m: Model): NpuFlow {
             val previous = state(context)
             if (previous == "trying") {
                 setState(context, "failed: the NPU runtime crashed the app last time")
             }
             state(context).let { if (it.startsWith("failed")) throw IllegalStateException(it.removePrefix("failed: ")) }
-            if (!hasModel(context)) throw IllegalStateException("the AI model isn't included in this build")
+            if (!hasModel(context, m)) throw IllegalStateException("the AI model isn't included in this build")
 
             setState(context, "trying")
             try {
                 val dir = File(context.filesDir, "npu").apply { mkdirs() }
-                val model = File(dir, "rife_640x352.onnx")
+                val model = File(dir, "${m.name}.onnx")
                 // Re-copy the model (and drop the compiled cache) whenever the app was updated.
-                val marker = File(dir, "version")
+                val marker = File(dir, "${m.name}.version")
                 val version = com.jainz.memc.BuildConfig.VERSION_NAME
                 if (!model.exists() || runCatching { marker.readText() }.getOrNull() != version) {
-                    context.assets.open(ASSET).use { input -> model.outputStream().use { input.copyTo(it) } }
-                    dir.listFiles()?.filter { it.name.contains("_ctx") }?.forEach { it.delete() }
+                    context.assets.open(m.asset).use { input -> model.outputStream().use { input.copyTo(it) } }
+                    dir.listFiles()?.filter { it.name.startsWith("${m.name}_ctx") }?.forEach { it.delete() }
                     marker.writeText(version)
                 }
                 val libs = context.applicationInfo.nativeLibraryDir
@@ -125,7 +132,7 @@ class NpuFlow private constructor(
                     )
                 )
                 // Keep the compiled model so later starts are quick.
-                val cached = File(dir, "rife_640x352_ctx.onnx")
+                val cached = File(dir, "${m.name}_ctx.onnx")
                 val session = if (cached.exists()) {
                     runCatching { env.createSession(cached.absolutePath, options) }.getOrElse {
                         cached.delete()
@@ -137,10 +144,10 @@ class NpuFlow private constructor(
                     options.addConfigEntry("ep.context_embed_mode", "0")
                     env.createSession(model.absolutePath, options)
                 }
-                val npu = NpuFlow(env, session, WIDTH, HEIGHT)
+                val npu = NpuFlow(env, session, m.width, m.height)
                 // Test run, so a broken setup fails here and not in the middle of a video.
-                val blank = floats(3 * WIDTH * HEIGHT)
-                npu.run(blank, floats(3 * WIDTH * HEIGHT), 0.5f)
+                val blank = floats(3 * m.width * m.height)
+                npu.run(blank, floats(3 * m.width * m.height), 0.5f)
                 npu.averageMs = 0f
                 npu.runs = 0
                 setState(context, "ok")

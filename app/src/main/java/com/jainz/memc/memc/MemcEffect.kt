@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class MemcControl(enabled: Boolean, targetFps: Int, quality: Int) {
     @Volatile var enabled: Boolean = enabled
     @Volatile var targetFps: Int = targetFps
-    /** 0 = battery saver, 1 = balanced, 2 = best */
+    /** 0 = battery saver, 1 = balanced, 2 = best, 3 = AI (RIFE on the NPU, with "best" as its fallback) */
     @Volatile var quality: Int = quality
 
     /**
@@ -31,7 +31,12 @@ class MemcControl(enabled: Boolean, targetFps: Int, quality: Int) {
      * When it is set and works, in-between frames come from RIFE instead of block matching.
      */
     @Volatile var npuFactory: (() -> NpuFlow)? = null
-    /** What the NPU path is doing, for the export report. */
+    /**
+     * Playback: the AI model, created in the background by the player and handed over when
+     * ready. The engine uses it while quality is 3 and it is keeping up.
+     */
+    @Volatile var npu: NpuFlow? = null
+    /** What the NPU path is doing, for the status line and the export report. */
     @Volatile var npuStatus: String = ""
 
     // ---- Status, written by the engine ----
@@ -63,7 +68,7 @@ class MemcControl(enabled: Boolean, targetFps: Int, quality: Int) {
     internal fun longSideCap(): Int {
         val screen = maxLongSide
         if (screen <= 0) return Int.MAX_VALUE
-        val base = when (quality.coerceIn(0, 2)) {
+        val base = when (quality.coerceIn(0, 3)) {
             0 -> 1920
             1 -> 2560
             else -> screen

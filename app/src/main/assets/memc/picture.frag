@@ -73,13 +73,18 @@ void main() {
     } else if (uBoost > 0.001) {
         if (uMode == 1) {
             float nits = dot(rgb, K2020) * 1000.0;
-            float boosted = softKnee(nits * (1.0 + 0.8 * uBoost), 400.0, uPeakNits);
+            // Shadows keep their level: lifting them only amplifies noise and banding.
+            float gain = 1.0 + 0.8 * uBoost * smoothstep(2.0, 40.0, nits);
+            float boosted = softKnee(nits * gain, 400.0, uPeakNits);
             rgb = scaleTo(rgb, nits, boosted);
         } else {
             // SDR frames are gamma-encoded here. Scaling R'G'B' together keeps hue and
             // saturation; x1.5 on the encoded signal is about x2.4 in light for mid-tones.
             float y = dot(rgb, K709);
-            float boosted = softKnee(y * (1.0 + 0.5 * uBoost), 0.80, 1.0);
+            // Full gain for mid-tones and highlights, none for shadows: dark scenes stay clean
+            // (lifting them amplified compression noise and 8-bit banding into colour smudges).
+            float gain = 1.0 + 0.5 * uBoost * smoothstep(0.10, 0.40, y);
+            float boosted = softKnee(y * gain, 0.80, 1.0);
             rgb = scaleTo(rgb, y, boosted);
             float m = max(max(rgb.r, rgb.g), rgb.b);
             if (m > 1.0) rgb /= m;   // keep the hue when a channel would clip

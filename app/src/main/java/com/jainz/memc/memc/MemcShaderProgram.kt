@@ -88,8 +88,12 @@ class MemcShaderProgram(
     // AI interpolation on the NPU (export). Null until first used; stays null if it failed.
     private var npu: NpuFlow? = null
     private var npuTried = false
-    private val npuSmallProgram = if (control.npuFactory != null) program(context, "npu_small.frag") else null
-    private val npuInterpProgram = if (control.npuFactory != null) program(context, "npu_interp.frag") else null
+    private var npuOwned = false
+    private var npuFlowValid = false
+    private var npuTexW = 0
+    private var npuTexH = 0
+    private val npuSmallProgram = program(context, "npu_small.frag")
+    private val npuInterpProgram = program(context, "npu_interp.frag")
     private val npuSmall = arrayOfNulls<GlTextureInfo>(2)
     private val npuImage = arrayOfNulls<java.nio.FloatBuffer>(2)
     private val npuImageValid = BooleanArray(2)
@@ -222,9 +226,9 @@ class MemcShaderProgram(
             retired.clear()
             npuSmall.filterNotNull().forEach { runCatching { it.release() } }
             if (npuFlowTex != 0) GLES20.glDeleteTextures(2, intArrayOf(npuFlowTex, npuMaskTex), 0)
-            runCatching { npu?.close() }
+            if (npuOwned) runCatching { npu?.close() }
             npu = null
-            listOfNotNull(npuSmallProgram, npuInterpProgram).forEach { it.delete() }
+            listOf(npuSmallProgram, npuInterpProgram).forEach { it.delete() }
             listOfNotNull(copyProgram, pictureProgram, lumaProgram, searchProgram, refineProgram, smoothProgram, interpProgram)
                 .forEach { it.delete() }
         } catch (e: GlUtil.GlException) {
@@ -413,26 +417,10 @@ class MemcShaderProgram(
      * (not requested, failed to start, or failed mid-way), so the caller uses block matching.
      */
     private fun drawInterpNpu(out: GlTextureInfo, alpha: Float): Boolean {
-        val factory = control.npuFactory ?: return false
-        if (!npuTried) {
-            npuTried = true
-            try {
-                control.npuStatus = "starting"
-                npu = factory()
-                val n = npu!!
-                for (i in 0..1) {
-                    npuSmall[i] = texture(n.width, n.height, false)
-                    npuImage[i] = NpuFlow.floats(3 * n.width * n.height)
-                }
-                npuPixels = java.nio.ByteBuffer.allocateDirect(n.width * n.height * 4).order(java.nio.ByteOrder.nativeOrder())
-                npuFlowUpload = NpuFlow.floats(4 * n.width * n.height)
-                npuFlowTex = floatTexture(n.width, n.height, GLES30.GL_RGBA16F, GLES30.GL_RGBA)
-                npuMaskTex = floatTexture(n.width, n.height, GLES30.GL_R16F, GLES30.GL_RED)
-            } catch (e: Throwable) {
-                npuFailed(e)
-            }
-        }
-        val n = npu ?: return false
+        val live = control.adaptive
+        // Playback: only on the "AI" quality setting and while the phone keeps up.
+        if (live && (control.quality != 3 || control.easeLevel >= 1)) return false
+        val n = ensureNpu() ?: return false
         try {
             val w = n.width
             val h = n.height
@@ -443,40 +431,52 @@ class MemcShaderProgram(
                 npuImageValid[i] = true
                 refreshed = true
             }
-            if (refreshed) npuSceneCut = isSceneCut(npuImage[prev]!!, npuImage[cur]!!, w * h)
+            if (refreshed) {
+                npuSceneCut = isSceneCut(npuImage[prev]!!, npuImage[cur]!!, w * h)
+                npuFlowValid = false
+            }
             if (npuSceneCut) {
                 // A cut has no in-between: show the nearer real frame.
                 drawCopy(frames[if (alpha < 0.5f) prev else cur]!!, out)
                 return true
             }
 
-            val (flow, mask) = n.run(npuImage[prev]!!, npuImage[cur]!!, alpha)
-            // Planar (x0,y0,x1,y1 planes) -> one RGBA texel per pixel.
-            val upload = npuFlowUpload!!
-            val plane = w * h
-            upload.clear()
-            for (p in 0 until plane) {
-                upload.put(flow.get(p))
-                upload.put(flow.get(plane + p))
-                upload.put(flow.get(2 * plane + p))
-                upload.put(flow.get(3 * plane + p))
+            // Export asks the model for each exact moment. Playback asks once per pair of
+            // source frames (at the midpoint) and rescales that motion for the other moments,
+            // which keeps the NPU work to one pass per source frame.
+            if (!live || !npuFlowValid) {
+                val (flow, mask) = n.run(npuImage[prev]!!, npuImage[cur]!!, if (live) 0.5f else alpha)
+                // Planar (x0,y0,x1,y1 planes) -> one RGBA texel per pixel.
+                val upload = npuFlowUpload!!
+                val plane = w * h
+                upload.clear()
+                for (p in 0 until plane) {
+                    upload.put(flow.get(p))
+                    upload.put(flow.get(plane + p))
+                    upload.put(flow.get(2 * plane + p))
+                    upload.put(flow.get(3 * plane + p))
+                }
+                upload.rewind()
+                mask.rewind()
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, npuFlowTex)
+                GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, w, h, GLES30.GL_RGBA, GLES20.GL_FLOAT, upload)
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, npuMaskTex)
+                GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, w, h, GLES30.GL_RED, GLES20.GL_FLOAT, mask)
+                GlUtil.checkGlError()
+                npuFlowValid = true
             }
-            upload.rewind()
-            mask.rewind()
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, npuFlowTex)
-            GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, w, h, GLES30.GL_RGBA, GLES20.GL_FLOAT, upload)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, npuMaskTex)
-            GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, w, h, GLES30.GL_RED, GLES20.GL_FLOAT, mask)
-            GlUtil.checkGlError()
 
-            draw(out, npuInterpProgram!!) { p ->
+            draw(out, npuInterpProgram) { p ->
                 p.setSamplerTexIdUniform("uPrev", frames[prev]!!.texId, 0)
                 p.setSamplerTexIdUniform("uCur", frames[cur]!!.texId, 1)
                 p.setSamplerTexIdUniform("uFlow", npuFlowTex, 2)
                 p.setSamplerTexIdUniform("uMask", npuMaskTex, 3)
                 p.setFloatsUniform("uFlowToUv", floatArrayOf(1f / w, 1f / h))
+                p.setFloatsUniform("uFlowScale", if (live) floatArrayOf(alpha / 0.5f, (1f - alpha) / 0.5f) else floatArrayOf(1f, 1f))
+                p.setFloatUniform("uAlpha", alpha)
+                p.setIntUniform("uTimeBlend", if (live) 1 else 0)
             }
-            control.npuStatus = String.format(java.util.Locale.US, "AI on the NPU, %.0f ms per frame", n.averageMs)
+            control.npuStatus = String.format(java.util.Locale.US, "AI on the NPU, %.0f ms per pass", n.averageMs)
             return true
         } catch (e: Throwable) {
             npuFailed(e)
@@ -484,16 +484,63 @@ class MemcShaderProgram(
         }
     }
 
+    /** The model to use, or null. Adopts the player's instance or creates one for export. */
+    private fun ensureNpu(): NpuFlow? {
+        npu?.let { current ->
+            // The player may have dropped or replaced its instance.
+            if (!npuOwned && control.npu !== current) npu = null else return current
+        }
+        val shared = control.npu
+        if (shared == null) {
+            val factory = control.npuFactory ?: return null
+            if (npuTried) return null
+            npuTried = true
+            try {
+                control.npuStatus = "starting"
+                npu = factory()
+                npuOwned = true
+            } catch (e: Throwable) {
+                npuFailed(e)
+                return null
+            }
+        } else {
+            npu = shared
+            npuOwned = false
+        }
+        val n = npu ?: return null
+        return try {
+            if (npuTexW != n.width || npuTexH != n.height) {
+                npuSmall.filterNotNull().forEach { runCatching { it.release() } }
+                if (npuFlowTex != 0) GLES20.glDeleteTextures(2, intArrayOf(npuFlowTex, npuMaskTex), 0)
+                for (i in 0..1) {
+                    npuSmall[i] = texture(n.width, n.height, false)
+                    npuImage[i] = NpuFlow.floats(3 * n.width * n.height)
+                    npuImageValid[i] = false
+                }
+                npuPixels = java.nio.ByteBuffer.allocateDirect(n.width * n.height * 4).order(java.nio.ByteOrder.nativeOrder())
+                npuFlowUpload = NpuFlow.floats(4 * n.width * n.height)
+                npuFlowTex = floatTexture(n.width, n.height, GLES30.GL_RGBA16F, GLES30.GL_RGBA)
+                npuMaskTex = floatTexture(n.width, n.height, GLES30.GL_R16F, GLES30.GL_RED)
+                npuTexW = n.width
+                npuTexH = n.height
+            }
+            n
+        } catch (e: Throwable) {
+            npuFailed(e)
+            null
+        }
+    }
+
     private fun npuFailed(e: Throwable) {
         control.npuStatus = "AI unavailable (${(e.message ?: e.javaClass.simpleName).take(160)}) - used the GPU engine"
-        runCatching { npu?.close() }
+        if (npuOwned) runCatching { npu?.close() } else control.npu = null
         npu = null
     }
 
     /** Renders frame [i] at the model's size and reads it back as planar RGB floats. */
     private fun readSmall(i: Int, w: Int, h: Int) {
         val small = npuSmall[i]!!
-        draw(small, npuSmallProgram!!) { p ->
+        draw(small, npuSmallProgram) { p ->
             p.setSamplerTexIdUniform("uTex", frames[i]!!.texId, 0)
             p.setIntUniform("uHdr", if (useHdr) 1 else 0)
         }

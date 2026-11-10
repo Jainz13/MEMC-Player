@@ -20,6 +20,7 @@ import androidx.media3.ui.PlayerView
 import com.jainz.memc.export.ExportManager
 import com.jainz.memc.memc.MemcControl
 import com.jainz.memc.memc.MemcEffect
+import com.jainz.memc.memc.NpuFlow
 import com.jainz.memc.memc.PictureControl
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -66,6 +67,8 @@ class PlayerActivity : ComponentActivity() {
     private lateinit var memc: MemcControl
     private lateinit var picture: PictureControl
     private var memcInstalled = false
+    private var npuLive: NpuFlow? = null
+    private var npuStarting = false
     private var playerView: PlayerView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -95,6 +98,7 @@ class PlayerActivity : ComponentActivity() {
         // Frames are processed no larger than the screen: a 4K film on this panel is shown at
         // the panel's resolution anyway, and it cuts the GPU work by more than half.
         memc.maxLongSide = screenLongSide()
+        startNpuIfWanted()
         // Only build the effect pipeline when something needs it, so plain playback keeps the
         // direct HDR10+ path to the display.
         if (memcAllowed && (memc.enabled || picture.boost > 0f || picture.autoHdr)) installMemc()
@@ -395,6 +399,39 @@ class PlayerActivity : ComponentActivity() {
         applyDisplayRate()
     }
 
+    /**
+     * "AI" quality: load RIFE on the NPU in the background (the first time takes up to a minute
+     * while the model is prepared for this chip). The engine switches to it when it is ready
+     * and keeps using the GPU engine until then, or if it fails.
+     */
+    private fun startNpuIfWanted() {
+        if (memc.quality != 3 || !memc.enabled || npuLive != null || npuStarting) return
+        if (!NpuFlow.hasModel(this, NpuFlow.LIVE)) {
+            memc.npuStatus = "AI model isn't in this build - using the GPU engine"
+            return
+        }
+        npuStarting = true
+        memc.npuStatus = "AI model starting (first time can take a minute)…"
+        val appContext = applicationContext
+        g.scope.launch {
+            val result = runCatching { NpuFlow.create(appContext, NpuFlow.LIVE) }
+            withContext(Dispatchers.Main) {
+                npuStarting = false
+                result.onSuccess { n ->
+                    if (isDestroyed) {
+                        n.close()
+                    } else {
+                        npuLive = n
+                        memc.npu = n
+                        memc.npuStatus = "AI on the NPU"
+                    }
+                }.onFailure { e ->
+                    memc.npuStatus = "AI unavailable (${(e.message ?: e.javaClass.simpleName).take(120)}) - using the GPU engine"
+                }
+            }
+        }
+    }
+
     /** Restarts playback at the same position, for changes that need the pipeline rebuilt. */
     private fun restartAtPosition() {
         saveProgress()
@@ -427,6 +464,7 @@ class PlayerActivity : ComponentActivity() {
         memc.targetFps = fps
         memc.quality = quality
         memc.enabled = enabled
+        startNpuIfWanted()
         if (enabled && !memcInstalled) {
             restartAtPosition()
             return
@@ -576,6 +614,15 @@ class PlayerActivity : ComponentActivity() {
         saver?.cancel()
         state.release()
         player.release()
+        // Close the AI model a moment later, once the render thread has certainly stopped using it.
+        memc.npu = null
+        npuLive?.let { n ->
+            npuLive = null
+            g.scope.launch {
+                delay(2500)
+                n.close()
+            }
+        }
         super.onDestroy()
     }
 

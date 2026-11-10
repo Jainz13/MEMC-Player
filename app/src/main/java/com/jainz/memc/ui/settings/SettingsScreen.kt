@@ -318,10 +318,15 @@ fun SettingsScreen(nav: NavController) {
                 }
                 Text("Quality", style = MaterialTheme.typography.bodyMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(0 to "Battery saver", 1 to "Balanced", 2 to "Best").forEach { (v, label) ->
+                    listOf(0 to "Battery saver", 1 to "Balanced", 2 to "Best", 3 to "AI").forEach { (v, label) ->
                         FilterChip(selected = memcQuality == v, onClick = { st.memcQuality.set(v) }, label = { Text(label) })
                     }
                 }
+                Text(
+                    "AI uses the RIFE model on the phone's NPU during playback (one pass per source frame), with Best as its fallback when the NPU isn't ready or can't keep up.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Palette.TextFaint,
+                )
                 ToggleRow(
                     "AI interpolation for exports (NPU)",
                     "Uses the RIFE model on the phone's NPU for 60 fps exports: cleaner on complex motion. Falls back to the GPU engine if the NPU can't be used. First use takes up to a minute to prepare.",

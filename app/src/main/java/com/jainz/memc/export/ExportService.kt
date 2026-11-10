@@ -147,9 +147,9 @@ class ExportService : Service() {
             adaptive = false
             // AI interpolation on the NPU when enabled; the engine falls back to block matching
             // by itself if the NPU can't be used.
-            if (g.settings.npuExport.value && NpuFlow.hasModel(this@ExportService)) {
+            if (g.settings.npuExport.value && NpuFlow.hasModel(this@ExportService, NpuFlow.EXPORT)) {
                 val appContext = applicationContext
-                npuFactory = { NpuFlow.create(appContext) }
+                npuFactory = { NpuFlow.create(appContext, NpuFlow.EXPORT) }
             }
         }
         exportControl = control

@@ -911,8 +911,11 @@ private fun VideoTab(
                 )
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(0 to "Battery saver", 1 to "Balanced", 2 to "Best").forEach { (q, label) ->
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+        ) {
+            listOf(0 to "Battery saver", 1 to "Balanced", 2 to "Best", 3 to "AI (NPU)").forEach { (q, label) ->
                 FilterChip(
                     selected = quality == q,
                     onClick = { quality = q; onMemcChange(on, fps, q) },
@@ -954,7 +957,8 @@ private fun memcStatus(memc: MemcControl, available: Boolean): String {
     }
     val size = if (memc.procWidth > 0) " · ${memc.procWidth}×${memc.procHeight}, ${memc.bufferFrames}-frame buffer" else ""
     val eased = if (memc.easeLevel in 1..3) " · eased ${memc.easeLevel}/3 to stay smooth" else ""
-    return main + size + eased
+    val ai = if (memc.quality == 3 && memc.npuStatus.isNotBlank()) "\n${memc.npuStatus}" else ""
+    return main + size + eased + ai
 }
 
 @UnstableApi

@@ -88,7 +88,15 @@ android {
             )
         }
         // Extracted to disk at install: the NPU loads its part of the QNN runtime from a real folder.
-        jniLibs { useLegacyPackaging = true }
+        jniLibs {
+            useLegacyPackaging = true
+            // Qualcomm runtime parts for other chips. The S24 Ultra's Snapdragon 8 Gen 3 uses the
+            // "V75" NPU; dropping the rest roughly halves the APK.
+            excludes += listOf(
+                "**/libQnnHtpV68*.so", "**/libQnnHtpV69*.so", "**/libQnnHtpV73*.so",
+                "**/libQnnHtpV79*.so", "**/libQnnHtpV81*.so", "**/libQnnDsp*.so", "**/libQnnGpu.so",
+            )
+        }
     }
 
     lint {

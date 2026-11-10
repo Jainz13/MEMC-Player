@@ -51,9 +51,11 @@ jobs:
       - name: Fetch the NPU model
         run: |
           mkdir -p app/src/main/assets/npu
-          curl -fsSL -o app/src/main/assets/npu/rife_640x352.onnx \
-            https://github.com/${{ github.repository }}/releases/download/npu-model/rife422lite_640x352.onnx \
-            || echo "::warning::NPU model not found - building without AI interpolation."
+          for size in 640x352 448x256; do
+            curl -fsSL -o "app/src/main/assets/npu/rife_$size.onnx" \
+              "https://github.com/${{ github.repository }}/releases/download/npu-model/rife422lite_$size.onnx" \
+              || echo "::warning::NPU model $size not found - building without it."
+          done
           ls -la app/src/main/assets/npu || true
 
       - name: Build release APK
