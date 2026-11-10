@@ -58,6 +58,14 @@ import com.jainz.memc.ui.components.BackdropHeader
 import com.jainz.memc.ui.components.CardShape
 import com.jainz.memc.ui.components.CastShelf
 import com.jainz.memc.ui.components.FixMatchDialog
+import com.jainz.memc.ui.components.MediaInfoSection
+import com.jainz.memc.ui.components.rememberDownloadAction
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material3.AssistChip
 import com.jainz.memc.ui.components.rememberExportAction
 import com.jainz.memc.ui.components.ProgressStrip
 import com.jainz.memc.ui.components.SectionTitle
@@ -75,6 +83,7 @@ fun MovieDetailScreen(nav: NavController, tmdbId: Long) {
     var menu by remember { mutableStateOf(false) }
     var fixing by remember { mutableStateOf(false) }
     val export = rememberExportAction()
+    val download = rememberDownloadAction()
 
     val m = movie
     val primary = files.firstOrNull()?.video
@@ -143,6 +152,29 @@ fun MovieDetailScreen(nav: NavController, tmdbId: Long) {
                                 modifier = Modifier.padding(top = 4.dp),
                             )
                         }
+                        val movieName = listOfNotNull(m?.title ?: primary.parsedTitle, m?.year?.let { "($it)" }).joinToString(" ")
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(top = 10.dp).horizontalScroll(rememberScrollState()),
+                        ) {
+                            AssistChip(
+                                onClick = { scope.launch { g.db.videos().setWatched(primary.id, !primary.watched) } },
+                                label = { Text(if (primary.watched) "Watched" else "Mark watched") },
+                                leadingIcon = { Icon(Icons.Filled.Visibility, null, Modifier.size(18.dp)) },
+                            )
+                            if (primary.uri.startsWith("smb://")) {
+                                AssistChip(
+                                    onClick = { download(primary, movieName) },
+                                    label = { Text("Download · ${Format.size(primary.size)}") },
+                                    leadingIcon = { Icon(Icons.Filled.Download, null, Modifier.size(18.dp)) },
+                                )
+                            }
+                            AssistChip(
+                                onClick = { export(primary.uri, movieName) },
+                                label = { Text("Export 60 fps") },
+                                leadingIcon = { Icon(Icons.Filled.Speed, null, Modifier.size(18.dp)) },
+                            )
+                        }
                     }
                 }
             }
@@ -169,6 +201,8 @@ fun MovieDetailScreen(nav: NavController, tmdbId: Long) {
                     InfoRow("Released", m?.releaseDate)
                 }
             }
+
+            if (primary != null) item { MediaInfoSection(primary) }
 
             item { CastShelf(CastMember.parse(m?.cast ?: "")) }
 

@@ -77,7 +77,14 @@ private fun ExportRow(job: ExportJob) {
             Text(job.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             val statusText = when (job.status) {
                 ExportStatus.QUEUED -> "Waiting"
-                ExportStatus.RUNNING -> if (job.progress >= 0) "Rendering ${job.progress}%" else "Starting…"
+                ExportStatus.RUNNING -> if (job.progress >= 0) {
+                    val elapsedMin = (System.currentTimeMillis() - job.startedAt) / 60000.0
+                    val left = if (job.progress >= 2 && job.startedAt > 0) {
+                        val m = elapsedMin * (100 - job.progress) / job.progress
+                        if (m >= 90) " · about ${(m / 60).toInt()} h ${(m % 60).toInt()} min left" else " · about ${m.toInt() + 1} min left"
+                    } else ""
+                    "Rendering ${job.progress}%$left"
+                } else "Starting…"
                 ExportStatus.DONE -> "Done"
                 ExportStatus.FAILED -> "Failed"
                 ExportStatus.CANCELLED -> "Cancelled"

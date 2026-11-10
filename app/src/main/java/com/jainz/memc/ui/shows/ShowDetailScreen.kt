@@ -62,6 +62,11 @@ import com.jainz.memc.ui.components.BackdropHeader
 import com.jainz.memc.ui.components.CardShape
 import com.jainz.memc.ui.components.CastShelf
 import com.jainz.memc.ui.components.FixMatchDialog
+import com.jainz.memc.download.Downloads
+import com.jainz.memc.player.MediaProbe
+import android.widget.Toast
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material3.IconButton
 import com.jainz.memc.ui.components.ProgressStrip
 import com.jainz.memc.ui.components.TechBadges
 import com.jainz.memc.ui.components.WatchedTick
@@ -96,6 +101,13 @@ fun ShowDetailScreen(nav: NavController, tmdbId: Long) {
     // Open on the season of the next episode.
     LaunchedEffect(nextUp?.video?.season) {
         if (selected == null) nextUp?.video?.season?.let { selected = it }
+    }
+
+    // Read each listed episode's tracks once, so its badges (HDR, Atmos, DTS…) are real.
+    LaunchedEffect(episodes.map { it.video.id }) {
+        for (e in episodes) {
+            if (MediaProbe.cached(context, e.video.id) == null) MediaProbe.probe(context, g, e.video)
+        }
     }
 
     val s = show
@@ -303,6 +315,12 @@ private fun EpisodeRow(e: VideoCard) {
                 )
             }
             TechBadges(v.tech, Modifier.padding(top = 6.dp))
+        }
+        if (v.uri.startsWith("smb://")) {
+            IconButton(onClick = {
+                Downloads.enqueue(context, v.uri, v.fileName, "${e.title} ${Format.episodeCode(v.season, v.episode)}")
+                Toast.makeText(context, "Downloading - see Library → Downloads", Toast.LENGTH_SHORT).show()
+            }) { Icon(Icons.Filled.Download, "Download to phone", tint = Palette.TextDim) }
         }
     }
 }

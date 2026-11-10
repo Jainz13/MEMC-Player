@@ -64,6 +64,7 @@ class ExportService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private val progress = ProgressHolder()
     private var isForeground = false
+    private var stats: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -117,7 +118,9 @@ class ExportService : Service() {
         }
         currentId = job.id
         withoutAudio = false
-        ExportManager.update(job.id) { it.copy(status = ExportStatus.RUNNING, progress = 0, message = null) }
+        ExportManager.update(job.id) {
+            it.copy(status = ExportStatus.RUNNING, progress = 0, message = null, startedAt = System.currentTimeMillis())
+        }
         acquireWakeLock()
         begin(job)
     }
@@ -160,6 +163,14 @@ class ExportService : Service() {
             .addListener(object : Transformer.Listener {
                 override fun onCompleted(composition: Composition, exportResult: ExportResult) {
                     try {
+                        // Speed figures for troubleshooting: which encoder ran and how fast.
+                        val started = ExportManager.get(job.id)?.startedAt ?: 0L
+                        val seconds = ((System.currentTimeMillis() - started) / 1000.0).coerceAtLeast(1.0)
+                        stats = String.format(
+                            java.util.Locale.US, "%d frames in %.0f min (%.1f fps) · encoder %s",
+                            exportResult.videoFrameCount, seconds / 60, exportResult.videoFrameCount / seconds,
+                            exportResult.videoEncoderName ?: "unknown",
+                        )
                         onFinished(job, out)
                     } catch (e: Exception) {
                         failCurrent("Saving failed: ${e.message}")
@@ -226,7 +237,7 @@ class ExportService : Service() {
                                 "Saved without sound - this file's audio (e.g. DTS/TrueHD) can't be re-encoded on the phone"
                             } else {
                                 "Saved to Movies/MEMC Player"
-                            },
+                            } + (stats?.let { s -> " · $s" } ?: ""),
                         )
                     }
                     notifyDone(job.title, ok = true)

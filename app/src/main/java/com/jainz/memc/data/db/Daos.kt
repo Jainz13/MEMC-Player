@@ -109,6 +109,9 @@ interface VideoDao {
     @Query("UPDATE videos SET tech = :tech WHERE id = :id")
     suspend fun setTech(id: Long, tech: String)
 
+    @Query("UPDATE videos SET durationMs = :durationMs WHERE id = :id AND durationMs = 0")
+    suspend fun setDurationIfUnknown(id: Long, durationMs: Long)
+
     @Query("SELECT COUNT(*) FROM videos")
     fun observeCount(): Flow<Int>
 
@@ -126,7 +129,7 @@ interface VideoDao {
     @Query(CARD_SELECT + " WHERE v.sourceId = :sourceId AND v.folder = :folder ORDER BY v.fileName COLLATE NOCASE")
     fun inFolder(sourceId: Long, folder: String): Flow<List<VideoCard>>
 
-    @Query(CARD_SELECT + " WHERE v.movieId = :movieId ORDER BY v.size DESC")
+    @Query(CARD_SELECT + " WHERE v.movieId = :movieId ORDER BY (v.uri LIKE 'smb://%'), v.size DESC")
     fun forMovie(movieId: Long): Flow<List<VideoCard>>
 
     @Query(CARD_SELECT + " WHERE v.showId = :showId AND COALESCE(v.season, 0) = :season ORDER BY v.episode, v.fileName")

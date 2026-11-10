@@ -21,6 +21,8 @@ data class ExportJob(
     val message: String? = null,
     /** content:// address of the finished file in Movies/MEMC Player */
     val outputUri: String? = null,
+    /** When rendering started (ms since epoch), for the speed and time-left readout. */
+    val startedAt: Long = 0,
 )
 
 /** Queue of 60 fps exports; the ExportService works through it one video at a time. */

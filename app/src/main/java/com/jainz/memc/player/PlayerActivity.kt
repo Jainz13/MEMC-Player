@@ -373,6 +373,8 @@ class PlayerActivity : ComponentActivity() {
         val id = currentId() ?: return
         val video = player.videoFormat ?: return
         if (!techSaved.add(id)) return
+        // The file's full track list (from MediaProbe) is more complete than the one playing track.
+        if (MediaProbe.cached(this, id) != null) return
         lifecycleScope.launch {
             val v = g.db.videos().get(id) ?: return@launch
             val tags = PlayerState.techTags(video, player.audioFormat, v.tech)
