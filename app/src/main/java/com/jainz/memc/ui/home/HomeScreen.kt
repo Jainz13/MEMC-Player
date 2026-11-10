@@ -142,7 +142,7 @@ fun HomeScreen(nav: NavController) {
                 }
             }
         }
-        if (tmdbKey.isBlank() && storage != StorageAccess.NONE) {
+        if ((tmdbKey.isBlank() || TmdbSetup.checking) && storage != StorageAccess.NONE) {
             item { TmdbSetupCard() }
         }
 
@@ -364,14 +364,20 @@ private fun TopActions(nav: NavController, modifier: Modifier = Modifier) {
     }
 }
 
+/** What the set-up card is doing; kept outside the card so it survives the card being redrawn. */
+private object TmdbSetup {
+    var typed by mutableStateOf("")
+    var status by mutableStateOf<String?>(null)
+    var checking by mutableStateOf(false)
+}
+
 /** Step two of set-up, shown once storage access is given: connect TMDB for posters and details. */
 @Composable
 private fun TmdbSetupCard() {
     val g = MemcApp.graph
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var key by remember { mutableStateOf("") }
-    var status by remember { mutableStateOf<String?>(null) }
+    var key by remember { mutableStateOf(TmdbSetup.typed) }
+    val status = TmdbSetup.status
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = Palette.Surface,
@@ -391,25 +397,30 @@ private fun TmdbSetupCard() {
             }) { Text("Open TMDB") }
             OutlinedTextField(
                 value = key,
-                onValueChange = { key = it.trim(); status = null },
+                onValueChange = { key = it.trim(); TmdbSetup.typed = key; TmdbSetup.status = null },
                 label = { Text("TMDB API key") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(enabled = key.isNotBlank(), onClick = {
-                    scope.launch {
-                        status = "Checking…"
+                Button(enabled = key.isNotBlank() && !TmdbSetup.checking, onClick = {
+                    TmdbSetup.typed = key
+                    TmdbSetup.checking = true
+                    TmdbSetup.status = "Checking…"
+                    // App-wide scope: the card may leave the screen while the check runs.
+                    g.scope.launch {
                         val previous = g.settings.tmdbKey.value
                         g.settings.tmdbKey.set(key)
                         val problem = g.tmdb.verifyKey()
                         if (problem == null) {
                             g.db.videos().retryNotFound()
-                            ScanWorker.enqueue(context)
+                            ScanWorker.enqueue(context.applicationContext)
+                            TmdbSetup.status = null
                         } else {
                             g.settings.tmdbKey.set(previous)
-                            status = problem
+                            TmdbSetup.status = problem
                         }
+                        TmdbSetup.checking = false
                     }
                 }) { Text("Connect") }
                 status?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Palette.TextDim) }

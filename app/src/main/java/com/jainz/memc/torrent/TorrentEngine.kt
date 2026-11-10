@@ -21,6 +21,7 @@ import org.libtorrent4j.SettingsPack
 import org.libtorrent4j.TorrentFlags
 import org.libtorrent4j.TorrentHandle
 import org.libtorrent4j.TorrentInfo
+import org.libtorrent4j.alerts.AddTorrentAlert
 import org.libtorrent4j.alerts.Alert
 import org.libtorrent4j.alerts.AlertType
 import org.libtorrent4j.alerts.TorrentAlert
@@ -55,6 +56,8 @@ object TorrentEngine {
         @Volatile var moveProgress = 0f
         @Volatile var playPath: String? = null
         @Volatile var finishing = false
+        /** Last error the engine reported for this torrent while downloading. */
+        @Volatile var problem: String? = null
         /** The download request was already sent to the engine in this run. */
         @Volatile var requested = false
     }
@@ -151,15 +154,37 @@ object TorrentEngine {
         if (session != null) return
         val s = SessionManager()
         s.addListener(object : AlertListener {
-            override fun types(): IntArray = intArrayOf(AlertType.ADD_TORRENT.swig())
+            override fun types(): IntArray = intArrayOf(
+                AlertType.ADD_TORRENT.swig(), AlertType.TORRENT_ERROR.swig(), AlertType.FILE_ERROR.swig(),
+            )
+
             override fun alert(alert: Alert<*>) {
-                val handle = (alert as? TorrentAlert<*>)?.handle() ?: return
-                val id = runCatching { handle.infoHash().toHex().lowercase() }.getOrNull() ?: return
-                entries[id]?.handle = handle
-                runCatching { handle.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD) }
+                runCatching {
+                    val handle = (alert as? TorrentAlert<*>)?.handle() ?: return
+                    val id = handle.infoHash().toHex().lowercase()
+                    val entry = entries[id] ?: return
+                    when (alert.type()) {
+                        AlertType.ADD_TORRENT -> {
+                            val error = (alert as? AddTorrentAlert)?.error()
+                            if (error != null && error.isError) {
+                                entry.phase = TorrentPhase.FAILED
+                                entry.message = "Could not add: ${error.message}"
+                            } else {
+                                entry.handle = handle
+                                handle.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD)
+                            }
+                        }
+                        // Disk full, no permission to write, damaged data…
+                        else -> entry.problem = alert.message()
+                    }
+                }
             }
         })
-        s.start(SessionParams(SettingsPack().connectionsLimit(200).activeDownloads(4)))
+        val params = SessionParams(SettingsPack().connectionsLimit(200).activeDownloads(4))
+        // Plain read/write file access. The default (memory-mapped files) crashes the app on
+        // Android's shared storage.
+        params.setPosixDiskIO()
+        s.start(params)
         session = s
         sessionPaused = false
         val dir = saveDir(context)
@@ -178,6 +203,15 @@ object TorrentEngine {
                     }
                 }
             }.onFailure { e -> entries[id]?.let { it.phase = TorrentPhase.FAILED; it.message = e.message } }
+        }
+        publish()
+    }
+
+    /** The engine itself could not start: say so on every waiting torrent instead of "Starting…" forever. */
+    fun startFailed(error: Throwable) {
+        entries.values.filter { it.phase == TorrentPhase.DOWNLOADING }.forEach {
+            it.phase = TorrentPhase.FAILED
+            it.message = "The torrent engine could not start: ${error.message ?: error.javaClass.simpleName}"
         }
         publish()
     }
@@ -356,8 +390,9 @@ object TorrentEngine {
                     st == null -> "Starting…"
                     state == "DOWNLOADING_METADATA" -> "Getting torrent details…"
                     state == "CHECKING_FILES" || state == "CHECKING_RESUME_DATA" -> "Checking files…"
+                    st.numPeers() == 0 -> "Looking for peers…"
                     else -> "Downloading"
-                }
+                } + (e.problem?.let { " · Problem: ${it.take(140)}" } ?: "")
             }
             TorrentItem(
                 id = e.id,

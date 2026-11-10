@@ -51,7 +51,7 @@ class TorrentService : Service() {
         }
         val context = applicationContext
         worker = MemcApp.graph.scope.launch {
-            runCatching { TorrentEngine.ensureStarted(context) }
+            runCatching { TorrentEngine.ensureStarted(context) }.onFailure { TorrentEngine.startFailed(it) }
             var idleTicks = 0
             while (idleTicks < 3) {
                 runCatching { TorrentEngine.tick(context) }

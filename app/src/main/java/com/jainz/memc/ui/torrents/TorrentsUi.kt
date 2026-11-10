@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -41,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -197,7 +200,7 @@ fun SourcesScreen(nav: NavController) {
     LaunchedEffect(feed, trigger) {
         results = null
         error = null
-        if (feed == null || (feed.searchable && query.isBlank())) return@LaunchedEffect
+        if (feed == null || (feed.needsQuery && query.isBlank())) return@LaunchedEffect
         loading = true
         runCatching { Feeds.load(feed, query.trim()) }
             .onSuccess { results = it }
@@ -218,7 +221,7 @@ fun SourcesScreen(nav: NavController) {
                 EmptyMessage(
                     "No sources yet",
                     "Add the address of a torrent RSS feed, or a Torznab address from your own Jackett or Prowlarr. " +
-                        "Put {query} in the address where the search words go to make it searchable.",
+                        "Every source gets a search box. A normal website address won't work - it has to be the feed's address.",
                 ) { OutlinedButton(onClick = { adding = true }) { Text("Add source") } }
             }
             LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
@@ -230,7 +233,7 @@ fun SourcesScreen(nav: NavController) {
                         Column(Modifier.weight(1f)) {
                             Text(f.name, style = MaterialTheme.typography.titleMedium)
                             Text(
-                                (if (f.searchable) "Search · " else "Feed · ") + f.url,
+                                (if (f.needsQuery || f.torznab) "Search · " else "Feed · ") + f.url,
                                 style = MaterialTheme.typography.bodySmall, color = Palette.TextDim,
                                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                             )
@@ -243,19 +246,24 @@ fun SourcesScreen(nav: NavController) {
                 }
             }
         } else {
-            if (feed.searchable) {
-                Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = query, onValueChange = { query = it }, label = { Text("Search") },
-                        singleLine = true, modifier = Modifier.weight(1f),
-                    )
-                    TextButton(onClick = { trigger++ }) { Text("Go") }
-                }
+            Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = query, onValueChange = { query = it },
+                    label = { Text(if (feed.needsQuery || feed.torznab) "Search" else "Search in this feed") },
+                    singleLine = true, modifier = Modifier.weight(1f),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { trigger++ }),
+                )
+                TextButton(onClick = { trigger++ }) { Text("Go") }
             }
             when {
                 loading -> CircularProgressIndicator(Modifier.padding(32.dp).align(Alignment.CenterHorizontally))
                 error != null -> EmptyMessage("Couldn't load this source", error ?: "")
-                results?.isEmpty() == true -> EmptyMessage("Nothing found", "The source returned no torrents.")
+                results == null && feed.needsQuery -> EmptyMessage("Search this source", "Type what you're looking for and tap Go.")
+                results?.isEmpty() == true -> EmptyMessage(
+                    "Nothing found",
+                    if (query.isBlank()) "The source returned no torrents." else "No torrents match \"${query.trim()}\".",
+                )
             }
             LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
                 items(results ?: emptyList()) { item ->
@@ -295,16 +303,27 @@ fun SourcesScreen(nav: NavController) {
                     OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(
                         url, { url = it.trim() }, label = { Text("Feed address") },
-                        placeholder = { Text("https://…/rss or …/api?t=search&q={query}&apikey=…") },
+                        placeholder = { Text("example.org/rss") },
                         maxLines = 4, modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        "RSS feed address, or a Torznab address from Jackett / Prowlarr (with its API key). " +
+                            "It opens straight after saving so you can see whether it works.",
+                        style = MaterialTheme.typography.bodySmall, color = Palette.TextFaint,
                     )
                 }
             },
             confirmButton = {
-                TextButton(enabled = url.startsWith("http"), onClick = {
-                    feeds = feeds.filter { it.url != url } + Feed(name.ifBlank { Uri.parse(url).host ?: "Source" }, url)
+                TextButton(enabled = url.length >= 4 && url.contains('.'), onClick = {
+                    val address = Feeds.normalize(url)
+                    val added = Feed(name.trim().ifBlank { Uri.parse(address).host ?: "Source" }, address)
+                    feeds = feeds.filter { it.url != address } + added
                     Feeds.save(context, feeds)
                     adding = false
+                    // Open it right away: shows its torrents, or what is wrong with the address.
+                    query = ""
+                    open = added
+                    trigger++
                 }) { Text("Save") }
             },
             dismissButton = { TextButton(onClick = { adding = false }) { Text("Cancel") } },

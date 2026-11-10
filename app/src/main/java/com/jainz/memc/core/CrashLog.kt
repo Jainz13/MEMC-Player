@@ -51,6 +51,32 @@ object CrashLog {
         File(context.filesDir, FILE).writeText(header + body)
     }
 
+    /**
+     * Android stores a native crash as a binary record. Without decoding it fully, the readable
+     * text inside it (signal, abort message, library and function names of the crashing thread,
+     * in order) is enough to see which component crashed.
+     */
+    private fun nativeSummary(bytes: ByteArray): String {
+        val found = LinkedHashSet<String>()
+        val current = StringBuilder()
+        fun flush() {
+            val text = current.toString()
+            current.setLength(0)
+            val interesting = text.length >= 5 && (
+                ".so" in text || text.startsWith("SIG") || text.startsWith("SEGV") || text.startsWith("BUS") ||
+                    "abort" in text.lowercase() || text.startsWith("_Z") || "::" in text || "libtorrent" in text ||
+                    "Qnn" in text || "onnx" in text || "ffmpeg" in text.lowercase()
+                )
+            if (interesting && found.size < 60) found += text.take(160)
+        }
+        for (b in bytes) {
+            val c = b.toInt() and 0xff
+            if (c in 32..126) current.append(c.toChar()) else flush()
+        }
+        flush()
+        return "Readable parts of the crash record (first entries are closest to the crash):\n" + found.joinToString("\n")
+    }
+
     private fun collectExitReasons(context: Context) {
         if (Build.VERSION.SDK_INT < 30) return
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -78,9 +104,14 @@ object CrashLog {
             ApplicationExitInfo.REASON_LOW_MEMORY -> "Closed by Android because the phone ran out of memory"
             else -> "Crash"
         }
-        val trace = if (Build.VERSION.SDK_INT >= 31 && bad.reason == ApplicationExitInfo.REASON_ANR) {
-            runCatching { bad.traceInputStream?.bufferedReader()?.use { it.readText().take(20_000) } }.getOrNull()
-        } else null
+        val trace = when {
+            Build.VERSION.SDK_INT < 31 -> null
+            bad.reason == ApplicationExitInfo.REASON_ANR ->
+                runCatching { bad.traceInputStream?.bufferedReader()?.use { it.readText().take(20_000) } }.getOrNull()
+            bad.reason == ApplicationExitInfo.REASON_CRASH_NATIVE ->
+                runCatching { bad.traceInputStream?.use { nativeSummary(it.readBytes()) } }.getOrNull()
+            else -> null
+        }
         write(
             context,
             buildString {
