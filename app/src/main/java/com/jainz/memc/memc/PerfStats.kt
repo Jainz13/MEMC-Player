@@ -23,6 +23,8 @@ object PerfStats {
     val gpuNs = AtomicLong()
     /** Nanoseconds the NPU spent on the AI model. */
     val npuNs = AtomicLong()
+    /** Number of AI model passes. */
+    val npuRuns = AtomicLong()
     /** Frames the engine has sent to the screen. */
     val framesOut = AtomicLong()
     /** Late frames the player had to drop. */
@@ -36,6 +38,8 @@ object PerfStats {
         val gpuPercent: Int,
         val gpuSystemWide: Boolean,
         val npuPercent: Int,
+        /** Milliseconds per AI pass, 0 when the model didn't run. */
+        val npuMsPerPass: Int,
         val temperatureC: Float?,
         val thermal: String?,
         val fps: Int,
@@ -47,6 +51,7 @@ object PerfStats {
     private var lastGpu = 0L
     private var lastNpu = 0L
     private var lastFrames = 0L
+    private var lastRuns = 0L
     private var droppedBase = 0L
     private var sysGpu: File? = null
     private var sysGpuChecked = false
@@ -64,6 +69,7 @@ object PerfStats {
         val gpu = gpuNs.get()
         val npu = npuNs.get()
         val frames = framesOut.get()
+        val runs = npuRuns.get()
         val dt = wall - lastWall
         val first = lastWall == 0L || dt <= 0
         val result = if (first) null else {
@@ -74,12 +80,14 @@ object PerfStats {
                 gpuPercent = system ?: if (gpuTimerWorks) ((gpu - lastGpu) * 100 / dt).toInt().coerceIn(0, 100) else -1,
                 gpuSystemWide = system != null,
                 npuPercent = ((npu - lastNpu) * 100 / dt).toInt().coerceIn(0, 100),
+                npuMsPerPass = (runs - lastRuns).let { n -> if (n > 0) ((npu - lastNpu) / n / 1_000_000).toInt() else 0 },
                 temperatureC = batteryTemperature(context),
                 thermal = thermal(context),
                 fps = ((frames - lastFrames) * 1_000_000_000.0 / dt + 0.5).toInt(),
                 droppedTotal = dropped.get() - droppedBase,
             )
         }
+        lastRuns = runs
         lastWall = wall; lastCpu = cpu; lastGpu = gpu; lastNpu = npu; lastFrames = frames
         return result
     }

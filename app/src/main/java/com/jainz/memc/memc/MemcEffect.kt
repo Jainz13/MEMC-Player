@@ -79,6 +79,8 @@ class MemcControl(enabled: Boolean, targetFps: Int, quality: Int) {
         val base = when (quality.coerceIn(0, 3)) {
             0 -> 1920
             1 -> 2560
+            // AI: the NPU takes a fixed slice of every frame's time, so the GPU side is kept lighter.
+            3 -> 2560
             else -> screen
         }
         val eased = when (easeLevel) {

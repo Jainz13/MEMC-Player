@@ -1045,7 +1045,11 @@ private fun statsLine(s: PerfStats.Sample, memc: MemcControl): String = listOfNo
         s.gpuSystemWide -> "GPU ${s.gpuPercent}%"
         else -> "GPU ${s.gpuPercent}% (video)"
     },
-    if (memc.enabled && memc.quality == 3) "NPU ${s.npuPercent}%" else "NPU idle",
+    when {
+        !memc.enabled || memc.quality != 3 -> "NPU idle"
+        s.npuMsPerPass > 0 -> "NPU ${s.npuPercent}% (${s.npuMsPerPass} ms)"
+        else -> "NPU ${s.npuPercent}%"
+    },
     s.temperatureC?.let { String.format(java.util.Locale.US, "%.1f°C", it) + (s.thermal?.let { t -> " $t" } ?: "") },
     if (s.fps > 0) "${s.fps} fps" else null,
     if (memc.bufferFrames > 0) "buffer ${memc.bufferedFrames}/${memc.bufferFrames}" else null,

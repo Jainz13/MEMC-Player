@@ -58,6 +58,7 @@ class NpuFlow private constructor(
                         val mask = (result.get(1) as OnnxTensor).floatBuffer
                         val spent = System.nanoTime() - start
                         PerfStats.npuNs.addAndGet(spent)
+                        PerfStats.npuRuns.incrementAndGet()
                         val ms = spent / 1_000_000f
                         runs++
                         averageMs += (ms - averageMs) / runs
@@ -138,8 +139,9 @@ class NpuFlow private constructor(
                 options.addQnn(
                     mapOf(
                         "backend_path" to "$libs/libQnnHtp.so",
-                        // Steady rather than maximum power: "burst" drew enough to shut a warm phone down.
-                        "htp_performance_mode" to "balanced",
+                        // The fastest mode meant for long runs. "burst" (short peaks) drew enough to shut
+                        // a hot phone down; "balanced" was too slow for real time (32 ms a pass).
+                        "htp_performance_mode" to "sustained_high_performance",
                         "htp_graph_finalization_optimization_mode" to "3",
                         "enable_htp_fp16_precision" to "1",
                     )

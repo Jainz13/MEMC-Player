@@ -89,6 +89,8 @@ class MemcShaderProgram(
     private var npu: NpuFlow? = null
     private var npuTried = false
     private var npuOwned = false
+    private val lumaValid = BooleanArray(2)
+    private var motionReady = false
     private var npuFlowValid = false
     private var npuFlowIn: FloatArray? = null
     private var npuFlowOut: FloatArray? = null
@@ -147,6 +149,9 @@ class MemcShaderProgram(
     private var timerSupported: Boolean? = null
     private var activeQuery = 0
     private val pendingQueries = ArrayDeque<Int>()
+    /** NPU time that fell inside each pending measurement (the GPU was only waiting then). */
+    private val pendingNpuNs = ArrayDeque<Long>()
+    private var npuNsAtBegin = 0L
     private val queryValue = IntArray(1)
 
     /** Returns true when a measurement was started (and so must be ended). */
@@ -163,7 +168,8 @@ class MemcShaderProgram(
                 GLES30.glGetQueryObjectuiv(q, GLES30.GL_QUERY_RESULT_AVAILABLE, queryValue, 0)
                 if (queryValue[0] == 0) break
                 GLES30.glGetQueryObjectuiv(q, GLES30.GL_QUERY_RESULT, queryValue, 0)
-                PerfStats.gpuNs.addAndGet(queryValue[0].toLong() and 0xFFFFFFFFL)
+                val waited = pendingNpuNs.removeFirst()
+                PerfStats.gpuNs.addAndGet(((queryValue[0].toLong() and 0xFFFFFFFFL) - waited).coerceAtLeast(0))
                 GLES30.glDeleteQueries(1, intArrayOf(q), 0)
                 pendingQueries.removeFirst()
             }
@@ -180,6 +186,7 @@ class MemcShaderProgram(
                 return false
             }
             activeQuery = q
+            npuNsAtBegin = PerfStats.npuNs.get()
             return true
         } catch (e: Throwable) {
             timerSupported = false
@@ -195,6 +202,7 @@ class MemcShaderProgram(
         runCatching {
             GLES30.glEndQuery(GL_TIME_ELAPSED)
             pendingQueries.addLast(q)
+            pendingNpuNs.addLast(PerfStats.npuNs.get() - npuNsAtBegin)
         }
     }
 
@@ -236,8 +244,10 @@ class MemcShaderProgram(
                 ingest(inputTexture, frames[slot]!!)
                 npuImageValid[slot] = false
                 inputListener.onInputFrameProcessed(inputTexture)
-                drawLuma(frames[slot]!!, lumaFine[slot]!!)
-                drawCopy(lumaFine[slot]!!, lumaCoarse[slot]!!)
+                // Brightness maps and motion search are only made if the GPU engine ends up drawing
+                // this pair; the AI path doesn't need them.
+                lumaValid[slot] = false
+                motionReady = false
                 val hadPrevious = held > 0
                 prev = cur
                 cur = slot
@@ -304,6 +314,7 @@ class MemcShaderProgram(
     override fun release() {
         activeQuery = 0
         pendingQueries.clear()
+        pendingNpuNs.clear()
         try {
             releaseFrameTextures()
             releaseSearchTextures()
@@ -389,8 +400,20 @@ class MemcShaderProgram(
 
     // ---- Scheduling ----------------------------------------------------------------------
 
-    private fun plan(previousPts: Long, pts: Long, dt: Long, target: Int) {
+    /** Block-matching motion for the current pair, computed on first use. */
+    private fun ensureMotion() {
+        if (motionReady) return
+        for (i in intArrayOf(prev, cur)) {
+            if (lumaValid[i]) continue
+            drawLuma(frames[i]!!, lumaFine[i]!!)
+            drawCopy(lumaFine[i]!!, lumaCoarse[i]!!)
+            lumaValid[i] = true
+        }
         runMotionSearch()
+        motionReady = true
+    }
+
+    private fun plan(previousPts: Long, pts: Long, dt: Long, target: Int) {
         // Output grid: k / target seconds, strictly after the previous frame, up to this one.
         val kStart = Math.floorDiv(previousPts * target, 1_000_000L) + 1
         val kEnd = Math.floorDiv(pts * target, 1_000_000L)
@@ -497,6 +520,7 @@ class MemcShaderProgram(
     }
 
     private fun drawInterp(out: GlTextureInfo, alpha: Float) {
+        ensureMotion()
         val (lo, hi) = when (allocatedQuality) {
             0 -> 0.045f to 0.12f
             2 -> 0.030f to 0.09f
@@ -776,6 +800,8 @@ class MemcShaderProgram(
                 workW = roundTo16(max(32, (workH.toFloat() * pw / ph).roundToInt()))
             }
             for (i in 0..1) {
+                lumaValid[i] = false
+                motionReady = false
                 lumaFine[i] = texture(workW, workH, true)
                 lumaCoarse[i] = texture(workW / 2, workH / 2, true)
             }
