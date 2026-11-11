@@ -38,6 +38,9 @@ class PlayerState(val player: ExoPlayer) {
     var videoDecoder by mutableStateOf<String?>(null)
     var audioDecoder by mutableStateOf<String?>(null)
     var speed by mutableStateOf(1f)
+    // Kept as Compose state so the screen redraws the moment the format is known (the HDR /
+    // Dolby Vision badge depends on it). Declared up here: it must exist before init runs sync().
+    private var videoFormatSeen by mutableStateOf<Format?>(null)
 
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) = sync()
@@ -112,9 +115,6 @@ class PlayerState(val player: ExoPlayer) {
 
     // ---- Helpers for labels -----------------------------------------------------
 
-    // Kept as Compose state so the screen redraws the moment the format is known (the HDR /
-    // Dolby Vision badge depends on it).
-    private var videoFormatSeen by mutableStateOf<Format?>(null)
     val videoFormat: Format? get() = videoFormatSeen ?: player.videoFormat
     val audioFormat: Format? get() = player.audioFormat
 
