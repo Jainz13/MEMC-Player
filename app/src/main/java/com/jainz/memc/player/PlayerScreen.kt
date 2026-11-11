@@ -1047,6 +1047,7 @@ private fun memcStatus(memc: MemcControl, available: Boolean): String {
     val main = when {
         !available -> return "Not available for this video (the video pipeline refused it)"
         !memc.enabled -> return "Off"
+        memc.thermalLevel >= 4 -> "Paused: the phone is very hot. It resumes by itself when it cools"
         memc.easeLevel >= 4 -> "Paused: the phone couldn't keep up at this resolution"
         memc.active -> String.format(java.util.Locale.US, "Interpolating %.3f → %d fps", src, memc.effectiveFps())
         src > 0f && src >= memc.targetFps * 0.8f ->
@@ -1054,9 +1055,10 @@ private fun memcStatus(memc: MemcControl, available: Boolean): String {
         else -> "Starting… (measuring the video's frame rate)"
     }
     val size = if (memc.procWidth > 0) " · ${memc.procWidth}×${memc.procHeight}, ${memc.bufferFrames}-frame buffer" else ""
+    val heat = if (memc.thermalLevel == 3) " · lightest mode while the phone is hot" else ""
     val eased = if (memc.easeLevel in 1..3) " · eased ${memc.easeLevel}/3 to stay smooth" else ""
     val ai = if (memc.quality == 3 && memc.npuStatus.isNotBlank()) "\n${memc.npuStatus}" else ""
-    return main + size + eased + ai
+    return main + size + eased + heat + ai
 }
 
 @UnstableApi

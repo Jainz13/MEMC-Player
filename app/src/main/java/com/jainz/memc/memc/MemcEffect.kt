@@ -38,6 +38,12 @@ class MemcControl(enabled: Boolean, targetFps: Int, quality: Int) {
     @Volatile var npu: NpuFlow? = null
     /** What the NPU path is doing, for the status line and the export report. */
     @Volatile var npuStatus: String = ""
+    /**
+     * How hot Android says the phone is (PowerManager thermal status: 0 none, 1 light,
+     * 2 moderate, 3 severe, 4+ critical). The engine backs off as it rises: no AI from 2,
+     * lightest GPU quality from 3, no interpolation at all from 4.
+     */
+    @Volatile var thermalLevel: Int = 0
 
     // ---- Status, written by the engine ----
     @Volatile var sourceFps: Float = 0f
@@ -82,7 +88,7 @@ class MemcControl(enabled: Boolean, targetFps: Int, quality: Int) {
         return minOf(base, eased, screen).coerceAtLeast(640)
     }
 
-    internal fun effectiveQuality(): Int = if (easeLevel >= 1) 0 else quality.coerceIn(0, 2)
+    internal fun effectiveQuality(): Int = if (easeLevel >= 1 || thermalLevel >= 3) 0 else quality.coerceIn(0, 2)
 
     /** Output rate actually in use (the governor may hold 120 fps down to 60). */
     fun effectiveFps(): Int = effectiveTargetFps()

@@ -66,6 +66,7 @@ class ExportService : Service() {
     private val progress = ProgressHolder()
     private var isForeground = false
     private var stats: String? = null
+    private var heatListener: android.os.PowerManager.OnThermalStatusChangedListener? = null
     private var exportControl: MemcControl? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -153,6 +154,15 @@ class ExportService : Service() {
             }
         }
         exportControl = control
+        // On a hot phone the export leaves the NPU alone and carries on with the GPU engine.
+        runCatching {
+            val pm = getSystemService(android.os.PowerManager::class.java)
+            heatListener?.let { pm.removeThermalStatusListener(it) }
+            control.thermalLevel = minOf(pm.currentThermalStatus, 2)
+            val listener = android.os.PowerManager.OnThermalStatusChangedListener { control.thermalLevel = minOf(it, 2) }
+            heatListener = listener
+            pm.addThermalStatusListener(mainExecutor, listener)
+        }
         val effect = MemcEffect(control)
         // Same colour fix as playback, so HDR files missing container colour info export as HDR10.
         val extractors = ColorFixExtractorsFactory(

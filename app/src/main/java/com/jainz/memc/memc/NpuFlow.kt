@@ -106,6 +106,11 @@ class NpuFlow private constructor(
             }
             state(context).let { if (it.startsWith("failed")) throw IllegalStateException(it.removePrefix("failed: ")) }
             if (!hasModel(context, m)) throw IllegalStateException("the AI model isn't included in this build")
+            // Preparing the model is heavy work; never start it on a phone that is already hot.
+            val heat = runCatching { context.getSystemService(android.os.PowerManager::class.java)?.currentThermalStatus ?: 0 }.getOrDefault(0)
+            if (heat >= android.os.PowerManager.THERMAL_STATUS_MODERATE) {
+                throw IllegalStateException("the phone is too hot to start the AI model - let it cool down first")
+            }
 
             setState(context, "trying")
             try {
@@ -128,7 +133,8 @@ class NpuFlow private constructor(
                 options.addQnn(
                     mapOf(
                         "backend_path" to "$libs/libQnnHtp.so",
-                        "htp_performance_mode" to "burst",
+                        // Steady rather than maximum power: "burst" drew enough to shut a warm phone down.
+                        "htp_performance_mode" to "balanced",
                         "htp_graph_finalization_optimization_mode" to "3",
                         "enable_htp_fp16_precision" to "1",
                     )

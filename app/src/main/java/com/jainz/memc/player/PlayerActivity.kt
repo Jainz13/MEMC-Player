@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.util.Rational
 import android.view.WindowManager
 import android.provider.Settings
@@ -98,6 +99,7 @@ class PlayerActivity : ComponentActivity() {
         // Frames are processed no larger than the screen: a 4K film on this panel is shown at
         // the panel's resolution anyway, and it cuts the GPU work by more than half.
         memc.maxLongSide = screenLongSide()
+        watchHeat()
         startNpuIfWanted()
         // Only build the effect pipeline when something needs it, so plain playback keeps the
         // direct HDR10+ path to the display.
@@ -405,11 +407,44 @@ class PlayerActivity : ComponentActivity() {
      * while the model is prepared for this chip). The engine switches to it when it is ready
      * and keeps using the GPU engine until then, or if it fails.
      */
+    private var thermalListener: PowerManager.OnThermalStatusChangedListener? = null
+
+    /** Follows Android's heat rating so the engine backs off before the phone protects itself. */
+    private fun watchHeat() {
+        val pm = getSystemService(PowerManager::class.java) ?: return
+        memc.thermalLevel = runCatching { pm.currentThermalStatus }.getOrDefault(0)
+        val listener = PowerManager.OnThermalStatusChangedListener { status ->
+            val before = memc.thermalLevel
+            memc.thermalLevel = status
+            val message = when {
+                status >= 4 && before < 4 -> "Phone is very hot: 60 fps paused until it cools"
+                status == 3 && before < 3 -> "Phone is hot: 60 fps switched to its lightest mode"
+                status == 2 && before < 2 && memc.quality == 3 -> "Phone is warm: AI paused, using the GPU engine"
+                else -> null
+            }
+            if (message != null && memc.enabled) Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            if (status < 2) startNpuIfWanted()
+        }
+        thermalListener = listener
+        runCatching { pm.addThermalStatusListener(mainExecutor, listener) }
+    }
+
     private fun startNpuIfWanted() {
         if (memc.quality != 3 || !memc.enabled || npuLive != null || npuStarting) return
         if (!NpuFlow.hasModel(this, NpuFlow.LIVE)) {
             memc.npuStatus = "AI model isn't in this build - using the GPU engine"
             return
+        }
+        if (memc.thermalLevel >= 2) {
+            memc.npuStatus = "AI not started: the phone is hot - using the GPU engine until it cools"
+            return
+        }
+        NpuFlow.state(this).let { st ->
+            if (st == "trying" || st.startsWith("failed")) {
+                memc.npuStatus = "AI is switched off because it failed or the phone shut down while it was starting. " +
+                    "Using the GPU engine. To try again: Settings → Smooth motion (MEMC) → NPU status → Try again."
+                return
+            }
         }
         npuStarting = true
         memc.npuStatus = "AI model starting (first time can take a minute)…"
@@ -611,6 +646,7 @@ class PlayerActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        thermalListener?.let { l -> runCatching { getSystemService(PowerManager::class.java)?.removeThermalStatusListener(l) } }
         saveProgress()
         saver?.cancel()
         state.release()

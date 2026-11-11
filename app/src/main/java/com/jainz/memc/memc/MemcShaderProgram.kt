@@ -212,7 +212,7 @@ class MemcShaderProgram(
             GLES20.glDisable(GLES20.GL_BLEND)
 
             val target = control.effectiveTargetFps()
-            val interpolate = control.enabled && control.easeLevel < MAX_EASE && dt in VALID_DT &&
+            val interpolate = control.enabled && control.thermalLevel < 4 && control.easeLevel < MAX_EASE && dt in VALID_DT &&
                 control.sourceFps > 0f && control.sourceFps < target * 0.8f
             control.active = interpolate
             lastPtsUs = presentationTimeUs
@@ -495,6 +495,11 @@ class MemcShaderProgram(
         val live = control.adaptive
         // Playback: only on the "AI" quality setting and while the phone keeps up.
         if (live && (control.quality != 3 || control.easeLevel >= 1)) return false
+        // A hot phone gets the lighter GPU engine (playback and export alike).
+        if (control.thermalLevel >= 2) {
+            if (control.quality == 3 || !live) control.npuStatus = "AI paused: the phone is hot - using the GPU engine until it cools"
+            return false
+        }
         val n = ensureNpu() ?: return false
         try {
             val w = n.width

@@ -107,8 +107,9 @@ object PerfStats {
             PowerManager.THERMAL_STATUS_NONE -> "cool"
             PowerManager.THERMAL_STATUS_LIGHT -> "warm"
             PowerManager.THERMAL_STATUS_MODERATE -> "hot"
-            PowerManager.THERMAL_STATUS_SEVERE, PowerManager.THERMAL_STATUS_CRITICAL,
-            PowerManager.THERMAL_STATUS_EMERGENCY, PowerManager.THERMAL_STATUS_SHUTDOWN -> "very hot"
+            PowerManager.THERMAL_STATUS_SEVERE -> "very hot"
+            PowerManager.THERMAL_STATUS_CRITICAL, PowerManager.THERMAL_STATUS_EMERGENCY,
+            PowerManager.THERMAL_STATUS_SHUTDOWN -> "critical"
             else -> null
         }
     }.getOrNull()
