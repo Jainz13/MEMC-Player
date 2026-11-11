@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
@@ -36,9 +37,13 @@ class TorrentService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (!isForeground) {
             try {
-                startForeground(NOTIFICATION_ID, notification("Starting…", -1), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                // "Special use" has no daily time limit; the data-sync type is capped at 6 hours a day.
+                val type = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                startForeground(NOTIFICATION_ID, notification("Starting…", -1), type)
                 isForeground = true
             } catch (e: Exception) {
+                tellApp("Android did not let the download service start (${e.javaClass.simpleName}: ${e.message}). Open the app and tap Resume.")
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -99,6 +104,19 @@ class TorrentService : Service() {
                 }
             }
         }
+    }
+
+    private fun tellApp(error: String) {
+        runCatching { sendBroadcast(Intent(Torrents.ACTION_STATE).setPackage(packageName).putExtra("error", error)) }
+    }
+
+    /** Android's time limit for this kind of background work ran out: stop cleanly instead of being killed. */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        tellApp("Android's daily limit for background downloads was reached. Tap Resume to carry on.")
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        isForeground = false
+        stopSelf()
+        android.os.Process.killProcess(android.os.Process.myPid())
     }
 
     private fun notification(text: String, percent: Int): android.app.Notification {

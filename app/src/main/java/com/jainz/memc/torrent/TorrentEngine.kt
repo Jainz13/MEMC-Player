@@ -362,6 +362,8 @@ object TorrentEngine {
                 bytesPerSecond = st?.downloadRate()?.toLong() ?: 0,
                 peers = st?.numPeers() ?: 0,
                 totalBytes = st?.totalWanted() ?: 0,
+                doneBytes = st?.totalWantedDone() ?: 0,
+                uploadBytesPerSecond = st?.uploadRate()?.toLong() ?: 0,
                 playPath = e.playPath,
             )
         }

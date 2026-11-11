@@ -114,6 +114,18 @@ object CrashLog {
             ApplicationExitInfo.REASON_LOW_MEMORY -> "Closed by Android because the phone ran out of memory"
             else -> "Crash"
         }
+        write(context, reason + "\n" + details(bad))
+    }
+
+    /** Everything Android recorded about a process ending, as text. */
+    fun describe(exit: ApplicationExitInfo): String = buildString {
+        appendLine("MEMC Player ${BuildConfig.VERSION_NAME}")
+        appendLine("${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+        appendLine("Exit reason ${exit.reason}")
+        append(details(exit))
+    }
+
+    private fun details(bad: ApplicationExitInfo): String {
         val trace = when {
             Build.VERSION.SDK_INT < 31 -> null
             bad.reason == ApplicationExitInfo.REASON_ANR ->
@@ -122,18 +134,14 @@ object CrashLog {
                 runCatching { bad.traceInputStream?.use { nativeSummary(it.readBytes()) } }.getOrNull()
             else -> null
         }
-        write(
-            context,
-            buildString {
-                appendLine(reason)
-                appendLine("When: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(bad.timestamp))}")
-                appendLine("Details: ${bad.description ?: "none"}")
-                appendLine("Process: ${bad.processName}, status ${bad.status}, importance ${bad.importance}")
-                if (trace != null) {
-                    appendLine()
-                    append(trace)
-                }
-            },
-        )
+        return buildString {
+            appendLine("When: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(bad.timestamp))}")
+            appendLine("Details: ${bad.description ?: "none"}")
+            appendLine("Process: ${bad.processName}, status ${bad.status}, importance ${bad.importance}")
+            if (trace != null) {
+                appendLine()
+                append(trace)
+            }
+        }
     }
 }

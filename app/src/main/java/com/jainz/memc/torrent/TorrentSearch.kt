@@ -34,13 +34,19 @@ class SearchOutcome(val results: List<SearchResult>, val failed: List<String>)
  */
 object TorrentSearch {
 
+    enum class Category(val label: String) { ALL("All"), MOVIES("Movies"), TV("TV shows"), ANIME("Anime") }
+
     class Provider(
         val id: String,
         val name: String,
         val about: String,
         val onByDefault: Boolean,
-        val search: (String) -> List<SearchResult>,
+        /** Categories this provider can answer; it is skipped for the others. */
+        val covers: Set<Category>,
+        val search: (String, Category) -> List<SearchResult>,
     )
+
+    private val everything = Category.entries.toSet()
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).callTimeout(25, TimeUnit.SECONDS).build()
@@ -85,12 +91,18 @@ object TorrentSearch {
     }
 
     val providers: List<Provider> = listOf(
-        Provider("knaben", "Knaben", "Searches many torrent sites at once (movies, TV, anime)", true) { q ->
+        Provider("knaben", "Knaben", "Searches many torrent sites at once (movies, TV, anime)", true, everything) { q, cat ->
+            val categories = when (cat) {
+                Category.MOVIES -> listOf(3000000)
+                Category.TV -> listOf(2000000)
+                Category.ANIME -> listOf(6000000)
+                Category.ALL -> listOf(2000000, 3000000, 6000000)
+            }
             val body = JSONObject()
                 .put("query", q).put("size", 100)
                 .put("order_by", "seeders").put("order_direction", "desc")
                 .put("hide_unsafe", true).put("hide_xxx", true)
-                .put("categories", JSONArray(listOf(2000000, 3000000, 6000000)))
+                .put("categories", JSONArray(categories))
             val text = http.newCall(
                 Request.Builder().url("https://api.knaben.org/v1")
                     .post(body.toString().toRequestBody("application/json".toMediaType())).build()
@@ -106,7 +118,7 @@ object TorrentSearch {
                 SearchResult(title, link, long(o, "bytes"), int(o, "seeders"), "Knaben")
             }
         },
-        Provider("yts", "YTS", "Movies in small file sizes", true) { q ->
+        Provider("yts", "YTS", "Movies in small file sizes", true, setOf(Category.ALL, Category.MOVIES)) { q, _ ->
             val text = get("https://movies-api.accel.li/api/v2/list_movies.json?query_term=${enc(q)}&limit=50")
             val movies = JSONObject(text).optJSONObject("data")?.optJSONArray("movies") ?: JSONArray()
             movies.objects().flatMap { movie ->
@@ -119,7 +131,7 @@ object TorrentSearch {
                 }
             }
         },
-        Provider("torrentscsv", "Torrents-CSV", "Open database of torrents", true) { q ->
+        Provider("torrentscsv", "Torrents-CSV", "Open database of torrents", true, setOf(Category.ALL)) { q, _ ->
             val text = get("https://torrents-csv.com/service/search?q=${enc(q)}")
             (JSONObject(text).optJSONArray("torrents") ?: JSONArray()).objects().mapNotNull { o ->
                 val title = o.optString("name").takeIf { it.isNotBlank() } ?: return@mapNotNull null
@@ -127,11 +139,11 @@ object TorrentSearch {
                 SearchResult(title, magnet(hash, title), long(o, "size_bytes"), int(o, "seeders"), "Torrents-CSV")
             }
         },
-        Provider("nyaa", "Nyaa", "Anime", true) { q ->
+        Provider("nyaa", "Nyaa", "Anime", true, setOf(Category.ALL, Category.ANIME)) { q, _ ->
             Feeds.loadBlocking(Feed("Nyaa", "https://nyaa.si/?page=rss&c=1_0&f=0&q={query}"), q)
                 .map { SearchResult(it.title, it.link, it.sizeBytes, it.seeders, "Nyaa") }
         },
-        Provider("archive", "Internet Archive", "Public-domain and freely shared films", false) { q ->
+        Provider("archive", "Internet Archive", "Public-domain and freely shared films", false, setOf(Category.ALL, Category.MOVIES)) { q, _ ->
             val text = get(
                 "https://archive.org/advancedsearch.php?q=" + enc("title:($q) AND mediatype:(movies)") +
                     "&fl[]=title,item_size,btih&rows=100&page=1&output=json"
@@ -142,8 +154,13 @@ object TorrentSearch {
                 SearchResult(title, magnet(hash, title), long(o, "item_size"), -1, "Internet Archive")
             }
         },
-        Provider("tpb", "The Pirate Bay", "Large general index, video category. Off by default: unmoderated uploads", false) { q ->
-            JSONArray(get("https://apibay.org/q.php?q=${enc(q)}&cat=200")).objects().mapNotNull { o ->
+        Provider("tpb", "The Pirate Bay", "Large general index, video category. Off by default: unmoderated uploads", false, everything) { q, cat ->
+            val id = when (cat) {
+                Category.MOVIES -> "201,207"
+                Category.TV -> "205,208"
+                else -> "200"
+            }
+            JSONArray(get("https://apibay.org/q.php?q=${enc(q)}&cat=$id")).objects().mapNotNull { o ->
                 val title = o.optString("name").takeIf { it.isNotBlank() && it != "No results returned" } ?: return@mapNotNull null
                 val hash = o.optString("info_hash").takeIf { it.length == 40 } ?: return@mapNotNull null
                 SearchResult(title, magnet(hash, title), long(o, "size"), int(o, "seeders"), "The Pirate Bay")
@@ -168,10 +185,10 @@ object TorrentSearch {
      * Asks every switched-on provider, and the user's own searchable sources, at the same time.
      * A provider that fails is listed in [SearchOutcome.failed]; the others still answer.
      */
-    suspend fun search(context: Context, query: String): SearchOutcome = coroutineScope {
+    suspend fun search(context: Context, query: String, category: Category = Category.ALL): SearchOutcome = coroutineScope {
         val on = enabled(context)
-        val jobs = providers.filter { it.id in on }.map { p ->
-            async(Dispatchers.IO) { p.name to runCatching { p.search(query) } }
+        val jobs = providers.filter { it.id in on && category in it.covers }.map { p ->
+            async(Dispatchers.IO) { p.name to runCatching { p.search(query, category) } }
         } + Feeds.list(context).filter { it.needsQuery || it.torznab }.map { feed ->
             async(Dispatchers.IO) {
                 feed.name to runCatching {

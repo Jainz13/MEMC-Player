@@ -1,5 +1,42 @@
 package com.jainz.memc.ui.torrents
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Category
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.PauseCircleOutline
+import androidx.compose.material.icons.filled.PlayCircleOutline
+import androidx.compose.material.icons.filled.RssFeed
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Tv
+import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -71,19 +108,64 @@ import com.jainz.memc.ui.theme.Palette
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
-/** The Torrents tab: search across providers, and the list of downloads. */
+/** The Torrents tab: a search page and a downloads page. */
 @Composable
 fun TorrentsScreen(nav: NavController) {
+    val torrents by Torrents.items.collectAsStateWithLifecycle()
+    // 0 = search, 1 = downloads. Opens on downloads when there are any.
+    var page by rememberSaveable { mutableStateOf(-1) }
+    if (page < 0) page = if (torrents.isEmpty()) 0 else 1
+    var choosing by remember { mutableStateOf(false) }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.statusBarsPadding().padding(start = 20.dp, end = 8.dp, top = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Torrents", style = MaterialTheme.typography.headlineLarge, modifier = Modifier.weight(1f))
+            IconButton(onClick = { nav.navigate(Routes.SOURCES) }) { Icon(Icons.Filled.RssFeed, "My sources", tint = Palette.TextDim) }
+            IconButton(onClick = { choosing = true }) { Icon(Icons.Filled.Tune, "Search providers", tint = Palette.TextDim) }
+        }
+        TabRow(
+            selectedTabIndex = page,
+            containerColor = Palette.Canvas,
+            contentColor = Palette.Accent,
+            indicator = { positions ->
+                TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(positions[page]), color = Palette.Accent)
+            },
+        ) {
+            val active = torrents.count { it.phase == TorrentPhase.DOWNLOADING || it.phase == TorrentPhase.MOVING }
+            listOf("Search", if (active > 0) "Downloads ($active)" else "Downloads").forEachIndexed { i, label ->
+                Tab(
+                    selected = page == i, onClick = { page = i },
+                    selectedContentColor = Palette.Accent, unselectedContentColor = Palette.TextDim,
+                    text = { Text(label, style = MaterialTheme.typography.titleSmall) },
+                )
+            }
+        }
+        if (page == 0) SearchPage(onAdded = { }, onProviders = { choosing = true })
+        else DownloadsPage(torrents)
+    }
+    if (choosing) ProvidersDialog { choosing = false }
+}
+
+private fun categoryIcon(c: TorrentSearch.Category): ImageVector = when (c) {
+    TorrentSearch.Category.ALL -> Icons.Filled.Category
+    TorrentSearch.Category.MOVIES -> Icons.Filled.Movie
+    TorrentSearch.Category.TV -> Icons.Filled.Tv
+    TorrentSearch.Category.ANIME -> Icons.Filled.AutoAwesome
+}
+
+@Composable
+private fun SearchPage(onAdded: () -> Unit, onProviders: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val torrents by Torrents.items.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }
+    var category by rememberSaveable { mutableStateOf(TorrentSearch.Category.ALL) }
     var outcome by remember { mutableStateOf<SearchOutcome?>(null) }
     var searching by remember { mutableStateOf(false) }
     var searchJob by remember { mutableStateOf<Job?>(null) }
     var added by remember { mutableStateOf(setOf<String>()) }
-    var adding by remember { mutableStateOf(false) }
-    var choosing by remember { mutableStateOf(false) }
     val showResults = searching || outcome != null
 
     fun closeSearch() {
@@ -99,7 +181,7 @@ fun TorrentsScreen(nav: NavController) {
         outcome = null
         searching = true
         searchJob = scope.launch {
-            outcome = runCatching { TorrentSearch.search(context, words) }
+            outcome = runCatching { TorrentSearch.search(context, words, category) }
                 .getOrElse { SearchOutcome(emptyList(), listOf("the search")) }
             searching = false
         }
@@ -107,130 +189,205 @@ fun TorrentsScreen(nav: NavController) {
 
     BackHandler(enabled = showResults) { closeSearch() }
 
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
-        item {
-            Text(
-                "Torrents",
-                style = MaterialTheme.typography.headlineLarge,
-                modifier = Modifier.statusBarsPadding().padding(start = 20.dp, top = 12.dp, bottom = 4.dp),
-            )
-        }
-        item {
-            Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = query, onValueChange = { query = it },
-                    label = { Text("Search torrents") },
-                    singleLine = true, modifier = Modifier.weight(1f),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { search() }),
-                    trailingIcon = {
-                        if (query.isNotEmpty() || showResults) {
-                            IconButton(onClick = { query = ""; closeSearch() }) { Icon(Icons.Filled.Close, "Clear search") }
-                        }
-                    },
-                )
-                TextButton(enabled = query.isNotBlank(), onClick = { search() }) { Text("Search") }
-            }
-        }
-
-        if (showResults) {
-            val results = outcome?.results ?: emptyList()
-            if (searching) {
-                item {
-                    Row(Modifier.fillMaxWidth().padding(32.dp), horizontalArrangement = Arrangement.Center) {
-                        CircularProgressIndicator()
-                    }
+    val field: @Composable (Modifier) -> Unit = { modifier ->
+        TextField(
+            value = query, onValueChange = { query = it },
+            placeholder = { Text("Search…") },
+            singleLine = true,
+            shape = RoundedCornerShape(50),
+            leadingIcon = { Icon(Icons.Filled.Search, null) },
+            trailingIcon = {
+                if (query.isNotEmpty() || showResults) {
+                    IconButton(onClick = { query = ""; closeSearch() }) { Icon(Icons.Filled.Close, "Clear search") }
                 }
-            }
-            outcome?.let { o ->
-                if (o.failed.isNotEmpty()) {
-                    item {
-                        Text(
-                            "No answer from: ${o.failed.joinToString(", ")}",
-                            style = MaterialTheme.typography.bodySmall, color = Palette.TextFaint,
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
-                        )
-                    }
-                }
-                if (o.results.isEmpty()) {
-                    item {
-                        EmptyMessage(
-                            "Nothing found",
-                            if (TorrentSearch.enabled(context).isEmpty()) "No search providers are switched on."
-                            else "No provider had a torrent for \"${query.trim()}\".",
-                        ) { OutlinedButton(onClick = { choosing = true }) { Text("Providers") } }
-                    }
-                }
-            }
-            items(results, key = { it.link }) { r ->
-                val isAdded = r.link in added
-                Column(
-                    Modifier.fillMaxWidth().clickable(enabled = !isAdded) {
-                        scope.launch {
-                            val problem = runCatching {
-                                if (r.link.startsWith("magnet:")) Torrents.addMagnet(context, r.link)
-                                else Torrents.addTorrentFile(context, Feeds.download(r.link))
-                            }.getOrElse { it.message ?: "Could not add it" }
-                            if (problem == null) added = added + r.link
-                            Toast.makeText(context, problem ?: "Added to your torrents", Toast.LENGTH_SHORT).show()
-                        }
-                    }.padding(horizontal = 20.dp, vertical = 10.dp)
-                ) {
-                    Text(r.title, style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                    Text(
-                        listOfNotNull(
-                            if (isAdded) "Added" else null,
-                            if (r.sizeBytes > 0) Format.size(r.sizeBytes) else null,
-                            if (r.seeders >= 0) "${r.seeders} seeders" else null,
-                            r.provider,
-                        ).joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (isAdded) Palette.Accent else Palette.TextDim,
-                    )
-                }
-            }
-        } else {
-            if (torrents.isEmpty()) {
-                item {
-                    EmptyMessage(
-                        "No torrents yet",
-                        "Search above, or add a magnet link or .torrent file. Finished downloads show up in your library.",
-                    )
-                }
-            }
-            items(torrents, key = { it.id }) { TorrentRow(it) }
-            item {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    OutlinedButton(onClick = { adding = true }) {
-                        Icon(Icons.Filled.Add, null)
-                        Text("  Add")
-                    }
-                    OutlinedButton(onClick = { choosing = true }) { Text("Providers") }
-                    OutlinedButton(onClick = { nav.navigate(Routes.SOURCES) }) { Text("My sources") }
-                }
-            }
-            if (torrents.any { it.phase == TorrentPhase.DONE }) {
-                item {
-                    TextButton(onClick = { Torrents.clearFinished(context) }, modifier = Modifier.padding(horizontal = 8.dp)) {
-                        Text("Clear finished")
-                    }
-                }
-            }
-            item {
-                Text(
-                    "Only download what you have the right to. Where finished downloads go (phone or network share) " +
-                        "and Wi-Fi only are in Settings → Torrents.",
-                    style = MaterialTheme.typography.bodySmall, color = Palette.TextFaint,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+            },
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = Palette.SurfaceHigh, unfocusedContainerColor = Palette.SurfaceHigh,
+                focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
+            ),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { search() }),
+            modifier = modifier,
+        )
+    }
+    val chips: @Composable () -> Unit = {
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TorrentSearch.Category.entries.forEach { c ->
+                FilterChip(
+                    selected = category == c,
+                    onClick = { category = c; if (showResults) search() },
+                    label = { Text(c.label) },
+                    leadingIcon = { Icon(categoryIcon(c), null, Modifier.size(18.dp)) },
                 )
             }
         }
     }
+
+    if (!showResults) {
+        // Landing page: logo, search box, categories.
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(top = 48.dp, bottom = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            Box(
+                Modifier.size(84.dp).clip(CircleShape).background(Palette.AccentDim),
+                contentAlignment = Alignment.Center,
+            ) { Icon(Icons.Filled.Search, null, Modifier.size(44.dp), tint = Palette.Accent) }
+            Text("Torrent Search", style = MaterialTheme.typography.headlineSmall)
+            field(Modifier.fillMaxWidth().padding(horizontal = 24.dp))
+            chips()
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(enabled = query.isNotBlank(), onClick = { search() }) {
+                    Icon(Icons.Filled.Search, null, Modifier.size(18.dp))
+                    Text("  Search")
+                }
+                OutlinedButton(onClick = onProviders) {
+                    Icon(Icons.Filled.Tune, null, Modifier.size(18.dp))
+                    Text("  Providers")
+                }
+            }
+            Text(
+                "Only download what you have the right to.",
+                style = MaterialTheme.typography.bodySmall, color = Palette.TextFaint,
+            )
+        }
+        return
+    }
+
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp)) {
+        item { field(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) }
+        item { Box(Modifier.padding(top = 10.dp, bottom = 4.dp)) { chips() } }
+        if (searching) {
+            item {
+                Row(Modifier.fillMaxWidth().padding(32.dp), horizontalArrangement = Arrangement.Center) {
+                    CircularProgressIndicator()
+                }
+            }
+        }
+        outcome?.let { o ->
+            item {
+                Text(
+                    "${o.results.size} results" + if (o.failed.isNotEmpty()) " · no answer from ${o.failed.joinToString(", ")}" else "",
+                    style = MaterialTheme.typography.bodySmall, color = Palette.TextFaint,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                )
+            }
+            if (o.results.isEmpty()) {
+                item {
+                    EmptyMessage(
+                        "Nothing found",
+                        if (TorrentSearch.enabled(context).isEmpty()) "No search providers are switched on."
+                        else "No provider had a torrent for \"${query.trim()}\" in ${category.label}.",
+                    ) { OutlinedButton(onClick = onProviders) { Text("Providers") } }
+                }
+            }
+        }
+        items(outcome?.results ?: emptyList(), key = { it.link }) { r ->
+            val isAdded = r.link in added
+            Column(
+                Modifier.fillMaxWidth().clickable(enabled = !isAdded) {
+                    scope.launch {
+                        val problem = runCatching {
+                            if (r.link.startsWith("magnet:")) Torrents.addMagnet(context, r.link)
+                            else Torrents.addTorrentFile(context, Feeds.download(r.link))
+                        }.getOrElse { it.message ?: "Could not add it" }
+                        if (problem == null) {
+                            added = added + r.link
+                            onAdded()
+                        }
+                        Toast.makeText(context, problem ?: "Added - see Downloads", Toast.LENGTH_SHORT).show()
+                    }
+                }.padding(horizontal = 20.dp, vertical = 10.dp)
+            ) {
+                Text(r.title, style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                Text(
+                    listOfNotNull(
+                        if (isAdded) "Added" else null,
+                        if (r.sizeBytes > 0) Format.size(r.sizeBytes) else null,
+                        if (r.seeders >= 0) "${r.seeders} seeders" else null,
+                        r.provider,
+                    ).joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isAdded) Palette.Accent else Palette.TextDim,
+                )
+            }
+            HorizontalDivider(color = Palette.SurfaceHigh)
+        }
+    }
+}
+
+/** Download list in the style of a download manager: filter tabs, rows that fill as they progress. */
+@Composable
+private fun DownloadsPage(torrents: List<TorrentItem>) {
+    val context = LocalContext.current
+    var filter by rememberSaveable { mutableStateOf(0) }
+    var adding by remember { mutableStateOf(false) }
+    val downloading = torrents.filter {
+        it.phase == TorrentPhase.DOWNLOADING || it.phase == TorrentPhase.PAUSED || it.phase == TorrentPhase.MOVING
+    }
+    val finished = torrents.filter { it.phase == TorrentPhase.DONE }
+    val failed = torrents.filter { it.phase == TorrentPhase.FAILED }
+    val lists = listOf(torrents, downloading, finished, failed)
+    val names = listOf("ALL", "DOWNLOADING", "FINISHED", "ERROR")
+
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            ScrollableTabRow(
+                selectedTabIndex = filter,
+                containerColor = Palette.Surface,
+                contentColor = Palette.Text,
+                edgePadding = 8.dp,
+                divider = {},
+                indicator = { positions ->
+                    TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(positions[filter]), color = Palette.Accent)
+                },
+            ) {
+                names.forEachIndexed { i, name ->
+                    Tab(
+                        selected = filter == i, onClick = { filter = i },
+                        selectedContentColor = Palette.Text, unselectedContentColor = Palette.TextDim,
+                        text = { Text("$name (${lists[i].size})", style = MaterialTheme.typography.labelLarge) },
+                    )
+                }
+            }
+            val shown = lists[filter]
+            if (shown.isEmpty()) {
+                EmptyMessage(
+                    if (filter == 0) "No downloads yet" else "Nothing here",
+                    if (filter == 0) "Find something on the Search page, or tap + to add a magnet link or .torrent file." else "",
+                )
+            }
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 96.dp)) {
+                items(shown, key = { it.id }) { item ->
+                    TorrentRow(item)
+                    HorizontalDivider(color = Palette.Canvas)
+                }
+                if (filter != 1 && finished.isNotEmpty()) {
+                    item {
+                        TextButton(onClick = { Torrents.clearFinished(context) }, modifier = Modifier.padding(8.dp)) {
+                            Text("Clear finished from the list")
+                        }
+                    }
+                }
+            }
+        }
+        FloatingActionButton(
+            onClick = { adding = true },
+            containerColor = Palette.Accent, contentColor = Palette.Canvas,
+            modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp),
+        ) { Icon(Icons.Filled.Add, "Add torrent") }
+    }
     if (adding) AddTorrentDialog { adding = false }
-    if (choosing) ProvidersDialog { choosing = false }
+}
+
+private fun eta(seconds: Long): String = when {
+    seconds >= 3600 -> "${seconds / 3600}h${(seconds % 3600) / 60}m"
+    seconds >= 60 -> "${seconds / 60}m${seconds % 60}s"
+    else -> "${seconds}s"
 }
 
 /** Switches the built-in search providers on and off. */
@@ -274,51 +431,93 @@ private fun ProvidersDialog(onDismiss: () -> Unit) {
 @Composable
 private fun TorrentRow(item: TorrentItem) {
     val context = LocalContext.current
-    Surface(
-        color = Palette.Surface,
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+    var menu by remember { mutableStateOf(false) }
+    val done = item.phase == TorrentPhase.DONE
+    val progress = if (done) 1f else item.progress.coerceIn(0f, 1f)
+    val fill = when (item.phase) {
+        TorrentPhase.FAILED -> Palette.Danger.copy(alpha = 0.18f)
+        TorrentPhase.DONE -> Palette.Accent.copy(alpha = 0.22f)
+        else -> Palette.Accent.copy(alpha = 0.30f)
+    }
+    Row(
+        Modifier.fillMaxWidth()
+            .background(Palette.Surface)
+            // The row itself is the progress bar.
+            .drawBehind { drawRect(fill, size = Size(size.width * progress, size.height)) }
+            .padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(item.name, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            val detail = if (item.phase == TorrentPhase.DOWNLOADING && item.totalBytes > 0) {
-                listOf(
-                    "${(item.progress * 100).toInt()}% of ${Format.size(item.totalBytes)}",
-                    "${Format.size(item.bytesPerSecond)}/s",
-                    "${item.peers} peers",
-                ).joinToString(" · ")
-            } else null
-            Text(
-                listOfNotNull(item.status, detail).joinToString(" · "),
-                style = MaterialTheme.typography.bodySmall,
-                color = when (item.phase) {
-                    TorrentPhase.FAILED -> Palette.Danger
-                    TorrentPhase.DONE -> Palette.Accent
-                    else -> Palette.TextDim
-                },
-            )
-            if (item.phase == TorrentPhase.DOWNLOADING || item.phase == TorrentPhase.MOVING || item.phase == TorrentPhase.PAUSED) {
-                LinearProgressIndicator(
-                    progress = { item.progress.coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth(),
-                    color = Palette.Accent,
-                    trackColor = Palette.SurfaceHigh,
+        Icon(
+            if (done) Icons.Filled.DownloadDone else Icons.Filled.Download, null,
+            tint = if (item.phase == TorrentPhase.FAILED) Palette.Danger else Palette.TextDim,
+            modifier = Modifier.size(28.dp),
+        )
+        Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(item.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+            Row {
+                Text(
+                    "${(progress * 100).toInt()}%" + if (item.totalBytes > 0) " | ${Format.size(item.totalBytes)}" else "",
+                    style = MaterialTheme.typography.bodySmall, color = Palette.TextDim, modifier = Modifier.weight(1f),
+                )
+                val right = when (item.phase) {
+                    TorrentPhase.DOWNLOADING -> if (item.totalBytes > 0) {
+                        val left = (item.totalBytes - item.doneBytes).coerceAtLeast(0)
+                        listOfNotNull(
+                            "${Format.size(item.bytesPerSecond)}/s↓ ${Format.size(item.uploadBytesPerSecond)}/s↑",
+                            if (item.bytesPerSecond > 0) eta(left / item.bytesPerSecond) else null,
+                        ).joinToString("  ")
+                    } else ""
+                    TorrentPhase.PAUSED -> "Stopped"
+                    TorrentPhase.MOVING -> "Moving to share"
+                    TorrentPhase.DONE -> "Completed"
+                    TorrentPhase.FAILED -> "Error"
+                }
+                Text(right, style = MaterialTheme.typography.bodySmall, color = Palette.TextDim)
+            }
+            // What it is doing, when that is more than plain downloading.
+            val note = when {
+                item.phase == TorrentPhase.DOWNLOADING && item.status == "Downloading" -> null
+                item.phase == TorrentPhase.PAUSED -> null
+                item.phase == TorrentPhase.DOWNLOADING -> item.status + if (item.totalBytes > 0) " · ${item.peers} peers" else ""
+                else -> item.status
+            }
+            if (note != null) {
+                Text(
+                    note, style = MaterialTheme.typography.bodySmall,
+                    color = if (item.phase == TorrentPhase.FAILED) Palette.Danger else Palette.TextFaint,
                 )
             }
-            Row {
-                when (item.phase) {
-                    TorrentPhase.DOWNLOADING -> TextButton(onClick = { Torrents.pause(context, item.id) }) { Text("Pause") }
-                    TorrentPhase.PAUSED, TorrentPhase.FAILED ->
-                        TextButton(onClick = { Torrents.resume(context, item.id) }) { Text("Resume") }
-                    else -> Unit
-                }
+        }
+        when (item.phase) {
+            TorrentPhase.DOWNLOADING ->
+                IconButton(onClick = { Torrents.pause(context, item.id) }) { Icon(Icons.Filled.PauseCircleOutline, "Pause", Modifier.size(30.dp)) }
+            TorrentPhase.PAUSED, TorrentPhase.FAILED ->
+                IconButton(onClick = { Torrents.resume(context, item.id) }) { Icon(Icons.Filled.PlayCircleOutline, "Resume", Modifier.size(30.dp)) }
+            else -> Unit
+        }
+        Box {
+            IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 item.playPath?.let { path ->
-                    TextButton(onClick = { Play.uri(context, Uri.fromFile(java.io.File(path)).toString(), item.name) }) { Text("Play") }
+                    DropdownMenuItem(text = { Text("Play") }, onClick = {
+                        menu = false
+                        Play.uri(context, Uri.fromFile(java.io.File(path)).toString(), item.name)
+                    })
+                }
+                val report = Torrents.engineReport
+                if (item.phase == TorrentPhase.FAILED && report != null) {
+                    DropdownMenuItem(text = { Text("Copy error report") }, onClick = {
+                        menu = false
+                        val clipboard = context.getSystemService(ClipboardManager::class.java)
+                        clipboard?.setPrimaryClip(ClipData.newPlainText("MEMC torrent report", report))
+                        Toast.makeText(context, "Report copied - paste it where you report the problem", Toast.LENGTH_LONG).show()
+                    })
                 }
                 if (item.phase != TorrentPhase.MOVING) {
-                    TextButton(onClick = { Torrents.remove(context, item.id) }) {
-                        Text(if (item.phase == TorrentPhase.DONE) "Hide" else "Remove")
-                    }
+                    DropdownMenuItem(
+                        text = { Text(if (done) "Remove from list" else "Remove and delete files") },
+                        onClick = { menu = false; Torrents.remove(context, item.id) },
+                    )
                 }
             }
         }

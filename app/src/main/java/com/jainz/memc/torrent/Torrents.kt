@@ -1,5 +1,7 @@
 package com.jainz.memc.torrent
 
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -9,6 +11,7 @@ import android.os.Environment
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import com.jainz.memc.MemcApp
+import com.jainz.memc.core.CrashLog
 import com.jainz.memc.data.scan.ScanWorker
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,13 +36,15 @@ data class TorrentItem(
     val bytesPerSecond: Long = 0,
     val peers: Int = 0,
     val totalBytes: Long = 0,
+    val doneBytes: Long = 0,
+    val uploadBytesPerSecond: Long = 0,
     /** Largest video file on the phone, playable while downloading and after. */
     val playPath: String? = null,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("phase", phase.name).put("status", status)
         .put("progress", progress.toDouble()).put("bps", bytesPerSecond).put("peers", peers)
-        .put("total", totalBytes).put("play", playPath ?: "")
+        .put("total", totalBytes).put("done", doneBytes).put("up", uploadBytesPerSecond).put("play", playPath ?: "")
 
     companion object {
         fun fromJson(o: JSONObject) = TorrentItem(
@@ -51,6 +56,8 @@ data class TorrentItem(
             bytesPerSecond = o.optLong("bps"),
             peers = o.optInt("peers"),
             totalBytes = o.optLong("total"),
+            doneBytes = o.optLong("done"),
+            uploadBytesPerSecond = o.optLong("up"),
             playPath = o.optString("play").takeIf { it.isNotBlank() },
         )
     }
@@ -185,6 +192,10 @@ object Torrents {
 
     /** Just added here, not yet reported by the engine: id → time added. */
     private val provisional = HashMap<String, Long>()
+    /** Why the engine last stopped by itself, in full, for sending to the developer. */
+    @Volatile var engineReport: String? = null
+        private set
+
     private var lastUpdate = 0L
     /** Last time anything was heard from, or asked of, the engine. */
     @Volatile private var lastSignal = 0L
@@ -211,18 +222,10 @@ object Torrents {
             while (true) {
                 delay(3000)
                 val busy = _items.value.any { it.phase == TorrentPhase.DOWNLOADING || it.phase == TorrentPhase.MOVING }
-                if (busy && SystemClock.elapsedRealtime() - lastSignal > 15_000) {
-                    synchronized(this@Torrents) {
-                        _items.value = _items.value.map {
-                            if (it.phase == TorrentPhase.DOWNLOADING || it.phase == TorrentPhase.MOVING) {
-                                it.copy(
-                                    phase = TorrentPhase.FAILED, bytesPerSecond = 0,
-                                    status = "The torrent engine stopped unexpectedly. Tap Resume to carry on.",
-                                )
-                            } else it
-                        }
-                        lastUpdate = 0L
-                    }
+                if (busy && SystemClock.elapsedRealtime() - lastSignal > 20_000) {
+                    val why = runCatching { engineExit(app) }.getOrNull()
+                    engineReport = why?.second
+                    failActive("The torrent engine stopped: ${why?.first ?: "it is not answering"}. Tap Resume to carry on.")
                 }
             }
         }
@@ -235,9 +238,43 @@ object Torrents {
         if (TorrentStore.hasSaved(app)) send(app, null, null)
     }
 
+    private fun failActive(status: String) {
+        synchronized(this) {
+            _items.value = _items.value.map {
+                if (it.phase == TorrentPhase.DOWNLOADING || it.phase == TorrentPhase.MOVING) {
+                    it.copy(phase = TorrentPhase.FAILED, bytesPerSecond = 0, uploadBytesPerSecond = 0, status = status)
+                } else it
+            }
+            lastUpdate = 0L
+        }
+    }
+
+    /** What Android recorded about the engine process ending: a short reason and the full record. */
+    private fun engineExit(context: Context): Pair<String, String>? {
+        if (Build.VERSION.SDK_INT < 30) return null
+        val am = context.getSystemService(ActivityManager::class.java) ?: return null
+        val exit = am.getHistoricalProcessExitReasons(context.packageName, 0, 8)
+            .filter { it.processName?.endsWith(":torrent") == true && System.currentTimeMillis() - it.timestamp < 120_000 }
+            .maxByOrNull { it.timestamp } ?: return null
+        val short = when (exit.reason) {
+            ApplicationExitInfo.REASON_CRASH_NATIVE -> "it crashed (signal ${exit.status})"
+            ApplicationExitInfo.REASON_CRASH -> "it crashed"
+            ApplicationExitInfo.REASON_ANR -> "it froze"
+            ApplicationExitInfo.REASON_LOW_MEMORY -> "Android closed it to free memory"
+            ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "Android closed it for using too much power"
+            else -> "Android closed it (${exit.description ?: "reason ${exit.reason}"})"
+        }
+        return short to CrashLog.describe(exit)
+    }
+
     private fun engineAlive() = lastUpdate != 0L && SystemClock.elapsedRealtime() - lastUpdate < 5_000
 
     private fun onState(app: Context, intent: Intent) {
+        intent.getStringExtra("error")?.let { error ->
+            engineReport = error
+            failActive(error)
+            return
+        }
         val incoming = JSONArray(intent.getStringExtra("items") ?: "[]").let { a ->
             List(a.length()) { TorrentItem.fromJson(a.getJSONObject(it)) }
         }
