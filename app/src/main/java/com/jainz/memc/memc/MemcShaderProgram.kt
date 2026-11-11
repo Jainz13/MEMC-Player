@@ -133,7 +133,74 @@ class MemcShaderProgram(
         this.errorListener = errorListener
     }
 
+    // ---- GPU time, for the stats overlay ------------------------------------------------------------
+    // The GPU reports how long it spent on the work between "begin" and "end" (a timer query).
+    // Results arrive a few frames later and are added up in PerfStats.
+
+    private var timerSupported: Boolean? = null
+    private var activeQuery = 0
+    private val pendingQueries = ArrayDeque<Int>()
+    private val queryValue = IntArray(1)
+
+    /** Returns true when a measurement was started (and so must be ended). */
+    private fun gpuTimerBegin(): Boolean {
+        try {
+            if (timerSupported == null) {
+                timerSupported = GLES20.glGetString(GLES20.GL_EXTENSIONS)?.contains("GL_EXT_disjoint_timer_query") == true
+                if (timerSupported != true) PerfStats.gpuTimerWorks = false
+            }
+            if (timerSupported != true || activeQuery != 0) return false
+            // Collect measurements that have finished.
+            while (pendingQueries.isNotEmpty()) {
+                val q = pendingQueries.first()
+                GLES30.glGetQueryObjectuiv(q, GLES30.GL_QUERY_RESULT_AVAILABLE, queryValue, 0)
+                if (queryValue[0] == 0) break
+                GLES30.glGetQueryObjectuiv(q, GLES30.GL_QUERY_RESULT, queryValue, 0)
+                PerfStats.gpuNs.addAndGet(queryValue[0].toLong() and 0xFFFFFFFFL)
+                GLES30.glDeleteQueries(1, intArrayOf(q), 0)
+                pendingQueries.removeFirst()
+            }
+            if (pendingQueries.size > 32) return false
+            // Start from a clean error state (bounded: a lost context reports errors forever).
+            var guard = 0
+            while (GLES20.glGetError() != GLES20.GL_NO_ERROR && guard++ < 8) Unit
+            GLES30.glGenQueries(1, queryValue, 0)
+            val q = queryValue[0]
+            GLES30.glBeginQuery(GL_TIME_ELAPSED, q)
+            if (GLES20.glGetError() != GLES20.GL_NO_ERROR) {
+                timerSupported = false
+                PerfStats.gpuTimerWorks = false
+                return false
+            }
+            activeQuery = q
+            return true
+        } catch (e: Throwable) {
+            timerSupported = false
+            PerfStats.gpuTimerWorks = false
+            return false
+        }
+    }
+
+    private fun gpuTimerEnd() {
+        val q = activeQuery
+        if (q == 0) return
+        activeQuery = 0
+        runCatching {
+            GLES30.glEndQuery(GL_TIME_ELAPSED)
+            pendingQueries.addLast(q)
+        }
+    }
+
     override fun queueInputFrame(glObjectsProvider: GlObjectsProvider, inputTexture: GlTextureInfo, presentationTimeUs: Long) {
+        val timed = gpuTimerBegin()
+        try {
+            process(inputTexture, presentationTimeUs)
+        } finally {
+            if (timed) gpuTimerEnd()
+        }
+    }
+
+    private fun process(inputTexture: GlTextureInfo, presentationTimeUs: Long) {
         readySignalled = false
         jobs.clear()
         try {
@@ -188,7 +255,12 @@ class MemcShaderProgram(
         } else {
             freeOutputs.addLast(outputTexture)
         }
-        drain()
+        val timed = jobs.isNotEmpty() && gpuTimerBegin()
+        try {
+            drain()
+        } finally {
+            if (timed) gpuTimerEnd()
+        }
     }
 
     override fun signalEndOfCurrentInputStream() {
@@ -219,6 +291,8 @@ class MemcShaderProgram(
     }
 
     override fun release() {
+        activeQuery = 0
+        pendingQueries.clear()
         try {
             releaseFrameTextures()
             releaseSearchTextures()
@@ -333,6 +407,7 @@ class MemcShaderProgram(
 
     private fun emit(out: GlTextureInfo, ptsUs: Long) {
         inFlight.add(out)
+        PerfStats.framesOut.incrementAndGet()
         outputListener.onOutputFrameAvailable(out, ptsUs)
     }
 
@@ -693,6 +768,8 @@ class MemcShaderProgram(
     }
 
     companion object {
+        /** GL_TIME_ELAPSED_EXT, from GL_EXT_disjoint_timer_query. */
+        private const val GL_TIME_ELAPSED = 0x88BF
         private const val BLOCK = 8
         private val VALID_DT = 4_000L..250_000L
         /** GPU memory for pre-rendered frames; the buffer is this divided by the frame size. */

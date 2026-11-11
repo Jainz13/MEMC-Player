@@ -79,6 +79,7 @@ fun SettingsScreen(nav: NavController) {
     val indexDevice by st.indexDevice.flow.collectAsStateWithLifecycle()
     val scanOnStart by st.scanOnStart.flow.collectAsStateWithLifecycle()
     val autoNext by st.autoPlayNext.flow.collectAsStateWithLifecycle()
+    val showStats by st.showStats.flow.collectAsStateWithLifecycle()
     val seekStep by st.seekStepSec.flow.collectAsStateWithLifecycle()
     val subScale by st.subtitleScale.flow.collectAsStateWithLifecycle()
     val zoom by st.defaultZoom.flow.collectAsStateWithLifecycle()
@@ -235,6 +236,7 @@ fun SettingsScreen(nav: NavController) {
         item {
             Card {
                 ToggleRow("Play next episode automatically", null, autoNext) { st.autoPlayNext.set(it) }
+                ToggleRow("Stats while playing", "CPU, GPU, NPU load, temperature and frame rate at the bottom of the player", showStats) { st.showStats.set(it) }
                 Text("Double-tap skip", style = MaterialTheme.typography.bodyMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(5, 10, 15, 30).forEach { s ->

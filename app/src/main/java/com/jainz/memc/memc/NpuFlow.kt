@@ -51,7 +51,9 @@ class NpuFlow private constructor(
                     session.run(mapOf("img0" to a, "img1" to b, "timestep" to c)).use { result ->
                         val flow = (result.get(0) as OnnxTensor).floatBuffer
                         val mask = (result.get(1) as OnnxTensor).floatBuffer
-                        val ms = (System.nanoTime() - start) / 1_000_000f
+                        val spent = System.nanoTime() - start
+                        PerfStats.npuNs.addAndGet(spent)
+                        val ms = spent / 1_000_000f
                         runs++
                         averageMs += (ms - averageMs) / runs
                         return flow to mask

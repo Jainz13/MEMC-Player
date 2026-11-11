@@ -5,6 +5,12 @@ import android.content.Context
 import android.graphics.Color as AColor
 import android.media.AudioManager
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.border
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jainz.memc.MemcApp
+import com.jainz.memc.memc.PerfStats
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -513,6 +519,57 @@ fun PlayerScreen(
             ) { locked = false; poke() }
         }
 
+        // ---- Format badge and stats (bottom left) ----
+        if (!inPip) {
+            val settings = MemcApp.graph.settings
+            val statsOn by settings.showStats.flow.collectAsStateWithLifecycle()
+            val format = PlayerState.hdrLabel(state.videoFormat)?.let {
+                when (it) {
+                    "HDR10 / HDR10+" -> "HDR"
+                    else -> it
+                }
+            }
+            // HDR and Dolby Vision videos announce themselves for a few seconds when they start.
+            var announce by remember { mutableStateOf(false) }
+            LaunchedEffect(format) {
+                if (format != null) {
+                    announce = true
+                    delay(6000)
+                    announce = false
+                }
+            }
+            var sample by remember { mutableStateOf<PerfStats.Sample?>(null) }
+            LaunchedEffect(statsOn) {
+                sample = null
+                if (statsOn) {
+                    PerfStats.reset()
+                    while (true) {
+                        PerfStats.sample(activity)?.let { sample = it }
+                        delay(1000)
+                    }
+                }
+            }
+            val lift = (if (controls) 104.dp else 10.dp) + (if (resumedAt != null) 52.dp else 0.dp)
+            Row(
+                Modifier.align(Alignment.BottomStart).padding(start = 20.dp, bottom = lift),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AnimatedVisibility(visible = format != null && (announce || statsOn), enter = fadeIn(), exit = fadeOut()) {
+                    FormatBadge(format ?: "")
+                }
+                if (statsOn) {
+                    val s = sample
+                    Text(
+                        if (s == null) "Measuring…" else statsLine(s, memc),
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, letterSpacing = 0.sp),
+                        color = Color.White,
+                        modifier = Modifier.background(Color(0x99000000), RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
+                }
+            }
+        }
+
         // "Resumed at 42:10 · Start over"
         if (resumedAt != null && !inPip) {
             Row(
@@ -934,6 +991,20 @@ private fun VideoTab(
             color = Palette.TextFaint,
         )
 
+        PanelHeading("Stats")
+        val statsOn by MemcApp.graph.settings.showStats.flow.collectAsStateWithLifecycle()
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Show load and temperature while playing", style = MaterialTheme.typography.bodyMedium, color = Color.White, modifier = Modifier.weight(1f))
+            Switch(checked = statsOn, onCheckedChange = { MemcApp.graph.settings.showStats.set(it) })
+        }
+        Text(
+            "CPU is this app's share of all cores. GPU is the time the graphics chip spends on this video " +
+                "(or the whole phone's GPU load where the phone reports it). NPU is the time the AI chip spends on the motion model. " +
+                "Temperature is the battery sensor.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Palette.TextFaint,
+        )
+
         PanelHeading("Now playing")
         playbackInfo(state).forEach { (k, value) ->
             Row(Modifier.padding(vertical = 3.dp)) {
@@ -943,6 +1014,33 @@ private fun VideoTab(
         }
     }
 }
+
+/** "HDR" / "Dolby Vision" tag in the style of the marks TVs show when HDR starts. */
+@Composable
+private fun FormatBadge(text: String) {
+    Text(
+        text.uppercase(),
+        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black, letterSpacing = 1.2.sp),
+        color = Color.White,
+        modifier = Modifier
+            .background(Color(0x99000000), RoundedCornerShape(6.dp))
+            .border(1.5.dp, Color.White, RoundedCornerShape(6.dp))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    )
+}
+
+private fun statsLine(s: PerfStats.Sample, memc: MemcControl): String = listOfNotNull(
+    "CPU ${s.cpuPercent}%",
+    when {
+        s.gpuPercent < 0 -> "GPU n/a"
+        s.gpuSystemWide -> "GPU ${s.gpuPercent}%"
+        else -> "GPU ${s.gpuPercent}% (video)"
+    },
+    if (memc.enabled && memc.quality == 3) "NPU ${s.npuPercent}%" else "NPU idle",
+    s.temperatureC?.let { String.format(java.util.Locale.US, "%.1f°C", it) + (s.thermal?.let { t -> " $t" } ?: "") },
+    if (s.fps > 0) "${s.fps} fps" else null,
+    if (s.droppedTotal > 0) "${s.droppedTotal} dropped" else null,
+).joinToString("  ·  ")
 
 private fun memcStatus(memc: MemcControl, available: Boolean): String {
     val src = memc.sourceFps

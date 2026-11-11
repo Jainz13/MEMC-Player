@@ -107,6 +107,7 @@ class PlayerActivity : ComponentActivity() {
             // The player reports every 50 late frames it had to drop. Faster than ~4 a second
             // means the phone isn't keeping up: ask the engine to ease its workload.
             override fun onDroppedVideoFrames(eventTime: AnalyticsListener.EventTime, droppedFrames: Int, elapsedMs: Long) {
+                com.jainz.memc.memc.PerfStats.dropped.addAndGet(droppedFrames.toLong())
                 if (memcInstalled && droppedFrames * 1000L / elapsedMs.coerceAtLeast(1) >= 4) memc.requestEase()
             }
         })
