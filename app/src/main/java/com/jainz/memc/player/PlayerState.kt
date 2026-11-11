@@ -59,6 +59,15 @@ class PlayerState(val player: ExoPlayer) {
             initializedTimestampMs: Long, initializationDurationMs: Long,
         ) { videoDecoder = decoderName }
 
+        override fun onVideoInputFormatChanged(
+            eventTime: AnalyticsListener.EventTime, format: Format,
+            decoderReuseEvaluation: androidx.media3.exoplayer.DecoderReuseEvaluation?,
+        ) { videoFormatSeen = format }
+
+        override fun onRenderedFirstFrame(eventTime: AnalyticsListener.EventTime, output: Any, renderTimeMs: Long) {
+            videoFormatSeen = player.videoFormat
+        }
+
         override fun onAudioDecoderInitialized(
             eventTime: AnalyticsListener.EventTime, decoderName: String,
             initializedTimestampMs: Long, initializationDurationMs: Long,
@@ -82,6 +91,7 @@ class PlayerState(val player: ExoPlayer) {
         hasNext = player.hasNextMediaItem()
         tracks = player.currentTracks
         videoSize = player.videoSize
+        videoFormatSeen = player.videoFormat
         speed = player.playbackParameters.speed
         player.mediaMetadata.let { md ->
             title = md.title?.toString() ?: ""
@@ -102,7 +112,10 @@ class PlayerState(val player: ExoPlayer) {
 
     // ---- Helpers for labels -----------------------------------------------------
 
-    val videoFormat: Format? get() = player.videoFormat
+    // Kept as Compose state so the screen redraws the moment the format is known (the HDR /
+    // Dolby Vision badge depends on it).
+    private var videoFormatSeen by mutableStateOf<Format?>(null)
+    val videoFormat: Format? get() = videoFormatSeen ?: player.videoFormat
     val audioFormat: Format? get() = player.audioFormat
 
     companion object {

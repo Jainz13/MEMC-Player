@@ -540,7 +540,8 @@ fun PlayerScreen(
             }
             // HDR and Dolby Vision videos announce themselves for a few seconds when they start.
             var announce by remember { mutableStateOf(false) }
-            LaunchedEffect(format) {
+            // Once per video (and again if the format changes).
+            LaunchedEffect(format, player.currentMediaItemIndex) {
                 if (format != null) {
                     announce = true
                     delay(6000)
@@ -1051,7 +1052,8 @@ private fun statsLine(s: PerfStats.Sample, memc: MemcControl): String = listOfNo
         else -> "NPU ${s.npuPercent}%"
     },
     s.temperatureC?.let { String.format(java.util.Locale.US, "%.1f°C", it) + (s.thermal?.let { t -> " $t" } ?: "") },
-    if (s.fps > 0) "${s.fps} fps" else null,
+    // Frames the engine produced this second; above the target while it refills its buffer.
+    if (s.fps > 0) "rendering ${s.fps} fps" else null,
     if (memc.bufferFrames > 0) "buffer ${memc.bufferedFrames}/${memc.bufferFrames}" else null,
     if (s.droppedTotal > 0) "${s.droppedTotal} dropped" else null,
 ).joinToString("  ·  ")
