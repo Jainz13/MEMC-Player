@@ -54,6 +54,8 @@ class MemcControl(enabled: Boolean, targetFps: Int, quality: Int) {
     @Volatile var procHeight: Int = 0
     /** Frames the engine may render ahead of the screen. */
     @Volatile var bufferFrames: Int = 0
+    /** Frames currently rendered and waiting for their turn on screen. */
+    @Volatile var bufferedFrames: Int = 0
 
     private val easeRequests = AtomicInteger()
 

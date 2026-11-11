@@ -371,8 +371,17 @@ fun PlayerScreen(
             )
         }
 
-        if (state.buffering && !inPip) {
-            CircularProgressIndicator(Modifier.align(Alignment.Center).size(48.dp), color = Palette.Accent)
+        if ((state.buffering || state.prebuffering) && !inPip) {
+            Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator(Modifier.size(48.dp), color = Palette.Accent)
+                if (state.prebuffering) {
+                    Text(
+                        "Preparing 60 fps…",
+                        style = MaterialTheme.typography.bodySmall, color = Color.White,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+            }
         }
 
         // Gesture feedback pill.
@@ -1039,6 +1048,7 @@ private fun statsLine(s: PerfStats.Sample, memc: MemcControl): String = listOfNo
     if (memc.enabled && memc.quality == 3) "NPU ${s.npuPercent}%" else "NPU idle",
     s.temperatureC?.let { String.format(java.util.Locale.US, "%.1f°C", it) + (s.thermal?.let { t -> " $t" } ?: "") },
     if (s.fps > 0) "${s.fps} fps" else null,
+    if (memc.bufferFrames > 0) "buffer ${memc.bufferedFrames}/${memc.bufferFrames}" else null,
     if (s.droppedTotal > 0) "${s.droppedTotal} dropped" else null,
 ).joinToString("  ·  ")
 

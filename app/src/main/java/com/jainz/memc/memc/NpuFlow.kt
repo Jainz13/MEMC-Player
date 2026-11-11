@@ -37,11 +37,16 @@ class NpuFlow private constructor(
     @Volatile var runs = 0
         private set
 
+    private var timestepValue = Float.NaN
+
     /** Returns flow (4 planes of width*height) and mask (1 plane), valid until the next call. */
     fun run(img0: FloatBuffer, img1: FloatBuffer, t: Float): Pair<FloatBuffer, FloatBuffer> {
         val start = System.nanoTime()
-        timestep.clear()
-        for (i in 0 until width * height) timestep.put(t)
+        if (t != timestepValue) {
+            timestep.clear()
+            for (i in 0 until width * height) timestep.put(t)
+            timestepValue = t
+        }
         timestep.rewind()
         img0.rewind()
         img1.rewind()

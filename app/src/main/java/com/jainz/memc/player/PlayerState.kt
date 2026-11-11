@@ -23,6 +23,8 @@ class PlayerState(val player: ExoPlayer) {
     var isPlaying by mutableStateOf(false)
     var playWhenReady by mutableStateOf(false)
     var buffering by mutableStateOf(false)
+    /** Paused for a moment so the 60 fps engine can render ahead. */
+    var prebuffering by mutableStateOf(false)
     var ended by mutableStateOf(false)
     var position by mutableLongStateOf(0L)
     var duration by mutableLongStateOf(0L)

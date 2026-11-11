@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.os.PowerManager
 import android.util.Rational
 import android.view.WindowManager
@@ -110,7 +111,11 @@ class PlayerActivity : ComponentActivity() {
             // means the phone isn't keeping up: ask the engine to ease its workload.
             override fun onDroppedVideoFrames(eventTime: AnalyticsListener.EventTime, droppedFrames: Int, elapsedMs: Long) {
                 com.jainz.memc.memc.PerfStats.dropped.addAndGet(droppedFrames.toLong())
-                if (memcInstalled && droppedFrames * 1000L / elapsedMs.coerceAtLeast(1) >= 4) memc.requestEase()
+                if (memcInstalled && droppedFrames * 1000L / elapsedMs.coerceAtLeast(1) >= 4) {
+                    // First let the engine catch its breath and refill its buffer; only if it
+                    // stutters again soon after is the workload eased.
+                    if (!prebuffer(minGapMs = 20_000)) memc.requestEase()
+                }
             }
         })
         player.addListener(object : Player.Listener {
@@ -121,8 +126,9 @@ class PlayerActivity : ComponentActivity() {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (isPlaying) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 else {
-                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    if (!state.prebuffering) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                     saveProgress()
+                    fillBufferWhilePaused()
                 }
                 updatePipParams()
             }
@@ -143,6 +149,8 @@ class PlayerActivity : ComponentActivity() {
             override fun onRenderedFirstFrame() {
                 recordTech()
                 checkAutoHdrPipeline()
+                // Start of the video or the first picture after a seek: render ahead before rolling.
+                if (!prebuffer(minGapMs = 1500)) fillBufferWhilePaused()
             }
 
             override fun onPositionDiscontinuity(
@@ -407,6 +415,77 @@ class PlayerActivity : ComponentActivity() {
      * while the model is prepared for this chip). The engine switches to it when it is ready
      * and keeps using the GPU engine until then, or if it fails.
      */
+    // ---- Rendering ahead ---------------------------------------------------------------------------
+
+    private var prebufferJob: Job? = null
+    private var fillJob: Job? = null
+    private var lastPrebufferAt = 0L
+
+    /**
+     * A paused player only does work once a second, which would leave the 60 fps engine idle.
+     * This nudges it so the engine keeps rendering frames ahead until its buffer is full.
+     */
+    private fun fillBufferWhilePaused() {
+        if (!memcInstalled || fillJob?.isActive == true) return
+        fillJob = lifecycleScope.launch {
+            var best = -1
+            var progressAt = SystemClock.elapsedRealtime()
+            while (isActive && memcInstalled && !player.isPlaying) {
+                val playbackState = player.playbackState
+                if (playbackState != Player.STATE_READY && playbackState != Player.STATE_BUFFERING) break
+                val have = memc.bufferedFrames
+                val capacity = memc.bufferFrames
+                if (capacity > 0 && have >= capacity - 1) break
+                val now = SystemClock.elapsedRealtime()
+                if (have > best) {
+                    best = have
+                    progressAt = now
+                } else if (now - progressAt > 2500) break
+                if (playbackState == Player.STATE_READY) {
+                    runCatching { player.createMessage { _, _ -> }.setLooper(player.playbackLooper).send() }
+                }
+                delay(12)
+            }
+        }
+    }
+
+    /**
+     * Holds playback for a moment (at most 3 seconds) while the engine fills its buffer, then
+     * carries on. Returns false when it didn't apply (not playing, 60 fps off, done too recently).
+     */
+    private fun prebuffer(minGapMs: Long): Boolean {
+        if (!memcInstalled || !memc.enabled || memc.thermalLevel >= 4 || memc.easeLevel >= 4) return false
+        if (!player.playWhenReady || prebufferJob?.isActive == true || isInPictureInPictureMode) return false
+        val source = memc.sourceFps
+        if (source > 0f && source >= memc.targetFps * 0.8f) return false
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastPrebufferAt < minGapMs) return false
+        lastPrebufferAt = now
+        state.prebuffering = true
+        player.pause()
+        prebufferJob = lifecycleScope.launch {
+            try {
+                while (isActive) {
+                    delay(40)
+                    if (player.playWhenReady) break // play was pressed meanwhile
+                    val capacity = memc.bufferFrames
+                    val wanted = if (capacity > 0) minOf(capacity - 2, maxOf(12, capacity * 6 / 10)) else Int.MAX_VALUE
+                    val waited = SystemClock.elapsedRealtime() - now
+                    if (waited > 3000 || (waited > 250 && memc.bufferedFrames >= wanted)) {
+                        // Not if the app was sent to the background meanwhile.
+                        if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) player.play()
+                        break
+                    }
+                }
+            } finally {
+                state.prebuffering = false
+                lastPrebufferAt = SystemClock.elapsedRealtime()
+            }
+        }
+        fillBufferWhilePaused()
+        return true
+    }
+
     private var thermalListener: PowerManager.OnThermalStatusChangedListener? = null
 
     /** Follows Android's heat rating so the engine backs off before the phone protects itself. */
@@ -460,6 +539,8 @@ class PlayerActivity : ComponentActivity() {
                         npuLive = n
                         memc.npu = n
                         memc.npuStatus = "AI on the NPU"
+                        // Give the AI model a full buffer to start from.
+                        prebuffer(minGapMs = 0)
                     }
                 }.onFailure { e ->
                     memc.npuStatus = "AI unavailable (${(e.message ?: e.javaClass.simpleName).take(120)}) - using the GPU engine"

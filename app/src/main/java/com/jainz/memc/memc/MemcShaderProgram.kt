@@ -90,6 +90,10 @@ class MemcShaderProgram(
     private var npuTried = false
     private var npuOwned = false
     private var npuFlowValid = false
+    private var npuFlowIn: FloatArray? = null
+    private var npuFlowOut: FloatArray? = null
+    private var npuBytes: ByteArray? = null
+    private var npuPlanar: FloatArray? = null
     private var npuTexW = 0
     private var npuTexH = 0
     private val npuSmallProgram = program(context, "npu_small.frag")
@@ -106,6 +110,9 @@ class MemcShaderProgram(
     // Governor state.
     private var lastWallNs = 0L
     private val behind = ArrayDeque<Boolean>()
+    private var lastEaseNs = 0L
+    private var lastRecoverNs = 0L
+    private var recoverBudget = 2
     private var cooldown = GOVERNOR_WINDOW
 
     private val coeffs = if (useHdr) floatArrayOf(0.2627f, 0.6780f, 0.0593f) else floatArrayOf(0.2126f, 0.7152f, 0.0722f)
@@ -250,6 +257,7 @@ class MemcShaderProgram(
 
     override fun releaseOutputFrame(outputTexture: GlTextureInfo) {
         if (!inFlight.remove(outputTexture)) return
+        control.bufferedFrames = inFlight.size
         if (retired.remove(outputTexture)) {
             runCatching { outputTexture.release() }
         } else {
@@ -269,6 +277,8 @@ class MemcShaderProgram(
         recentDeltas.clear()
         resetGovernor()
         control.easeLevel = 0
+        recoverBudget = 2
+        lastRecoverNs = 0L
         if (jobs.isEmpty()) outputListener.onCurrentOutputStreamEnded() else endOfStreamPending = true
     }
 
@@ -283,6 +293,7 @@ class MemcShaderProgram(
         retired.forEach { runCatching { it.release() } }
         retired.clear()
         inFlight.clear()
+        control.bufferedFrames = 0
         freeOutputs.clear()
         freeOutputs.addAll(outputs)
         inputListener.onFlush()
@@ -338,6 +349,19 @@ class MemcShaderProgram(
             ease()
             return
         }
+        // Stepped down earlier and it has been smooth with a well-filled buffer for a while:
+        // try the heavier setting again (a couple of times at most per video).
+        if (control.easeLevel > 0 && recoverBudget > 0 && now - lastEaseNs > RECOVER_AFTER_NS &&
+            outputs.isNotEmpty() && freeOutputs.size * 4 <= outputs.size
+        ) {
+            control.easeLevel--
+            recoverBudget--
+            lastRecoverNs = now
+            lastEaseNs = now
+            behind.clear()
+            cooldown = GOVERNOR_WINDOW * 2
+            return
+        }
         if (last == 0L || dtUs !in VALID_DT || outputs.isEmpty()) return
         val expectedNs = dtUs * 1000.0 / control.playbackSpeed.coerceIn(0.25f, 4f)
         val ratio = (now - last) / expectedNs
@@ -348,6 +372,10 @@ class MemcShaderProgram(
     }
 
     private fun ease() {
+        val now = System.nanoTime()
+        // Stepping back up didn't hold: stop trying for this video.
+        if (lastRecoverNs != 0L && now - lastRecoverNs < 20_000_000_000L) recoverBudget = 0
+        lastEaseNs = now
         if (control.easeLevel < MAX_EASE) control.easeLevel++
         behind.clear()
         cooldown = GOVERNOR_WINDOW * 3 / 2
@@ -407,6 +435,7 @@ class MemcShaderProgram(
 
     private fun emit(out: GlTextureInfo, ptsUs: Long) {
         inFlight.add(out)
+        control.bufferedFrames = inFlight.size
         PerfStats.framesOut.incrementAndGet()
         outputListener.onOutputFrameAvailable(out, ptsUs)
     }
@@ -527,15 +556,24 @@ class MemcShaderProgram(
             if (!live || !npuFlowValid) {
                 val (flow, mask) = n.run(npuImage[prev]!!, npuImage[cur]!!, if (live) 0.5f else alpha)
                 // Planar (x0,y0,x1,y1 planes) -> one RGBA texel per pixel.
+                // Done on plain arrays: element-by-element buffer access was costing several
+                // milliseconds per source frame.
                 val upload = npuFlowUpload!!
                 val plane = w * h
-                upload.clear()
+                val src = npuFlowIn ?: FloatArray(4 * plane).also { npuFlowIn = it }
+                val dst = npuFlowOut ?: FloatArray(4 * plane).also { npuFlowOut = it }
+                flow.rewind()
+                flow.get(src, 0, 4 * plane)
+                var o = 0
                 for (p in 0 until plane) {
-                    upload.put(flow.get(p))
-                    upload.put(flow.get(plane + p))
-                    upload.put(flow.get(2 * plane + p))
-                    upload.put(flow.get(3 * plane + p))
+                    dst[o] = src[p]
+                    dst[o + 1] = src[plane + p]
+                    dst[o + 2] = src[2 * plane + p]
+                    dst[o + 3] = src[3 * plane + p]
+                    o += 4
                 }
+                upload.clear()
+                upload.put(dst, 0, 4 * plane)
                 upload.rewind()
                 mask.rewind()
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, npuFlowTex)
@@ -586,6 +624,9 @@ class MemcShaderProgram(
         } else {
             npu = shared
             npuOwned = false
+            // A freshly started model is slow for its first passes: don't judge the load yet.
+            resetGovernor()
+            cooldown = GOVERNOR_WINDOW * 4
         }
         val n = npu ?: return null
         return try {
@@ -593,6 +634,7 @@ class MemcShaderProgram(
                 npuSmall.filterNotNull().forEach { runCatching { it.release() } }
                 if (npuFlowTex != 0) GLES20.glDeleteTextures(2, intArrayOf(npuFlowTex, npuMaskTex), 0)
                 for (i in 0..1) {
+                    npuFlowIn = null; npuFlowOut = null; npuBytes = null; npuPlanar = null
                     npuSmall[i] = texture(n.width, n.height, false)
                     npuImage[i] = NpuFlow.floats(3 * n.width * n.height)
                     npuImageValid[i] = false
@@ -630,13 +672,21 @@ class MemcShaderProgram(
         GlUtil.checkGlError()
         val image = npuImage[i]!!
         val plane = w * h
+        val bytes = npuBytes ?: ByteArray(4 * plane).also { npuBytes = it }
+        val floats = npuPlanar ?: FloatArray(3 * plane).also { npuPlanar = it }
+        pixels.rewind()
+        pixels.get(bytes, 0, 4 * plane)
         val scale = 1f / 255f
+        var o = 0
         for (p in 0 until plane) {
-            val o = p * 4
-            image.put(p, (pixels.get(o).toInt() and 0xff) * scale)
-            image.put(plane + p, (pixels.get(o + 1).toInt() and 0xff) * scale)
-            image.put(2 * plane + p, (pixels.get(o + 2).toInt() and 0xff) * scale)
+            floats[p] = (bytes[o].toInt() and 0xff) * scale
+            floats[plane + p] = (bytes[o + 1].toInt() and 0xff) * scale
+            floats[2 * plane + p] = (bytes[o + 2].toInt() and 0xff) * scale
+            o += 4
         }
+        image.clear()
+        image.put(floats, 0, 3 * plane)
+        image.rewind()
     }
 
     /** Mean brightness change over a sparse grid; a large jump means the shot changed. */
@@ -778,9 +828,11 @@ class MemcShaderProgram(
         private const val BLOCK = 8
         private val VALID_DT = 4_000L..250_000L
         /** GPU memory for pre-rendered frames; the buffer is this divided by the frame size. */
-        private const val POOL_BUDGET_BYTES = 480L * 1024 * 1024
+        // Frames rendered ahead of the screen: about 1 GB of graphics memory, at most ~1.2 s at 60 fps.
+        private const val POOL_BUDGET_BYTES = 1024L * 1024 * 1024
         private const val MIN_POOL = 4
-        private const val MAX_POOL = 24
+        private const val MAX_POOL = 72
+        private const val RECOVER_AFTER_NS = 30_000_000_000L
         private const val GOVERNOR_WINDOW = 48
         const val MAX_EASE = 4
         private const val BOOST_PEAK_NITS = 1600f
