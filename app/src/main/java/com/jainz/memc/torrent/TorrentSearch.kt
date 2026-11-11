@@ -65,6 +65,9 @@ object TorrentSearch {
         "udp://open.tracker.cl:1337/announce",
     )
 
+    private fun magnetHash(link: String): String? =
+        Regex("xt=urn:btih:([A-Za-z0-9]+)").find(link)?.groupValues?.get(1)?.lowercase()
+
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
     private fun magnet(hash: String, name: String) =
@@ -201,7 +204,7 @@ object TorrentSearch {
         val results = withContext(Dispatchers.Default) {
             answers.flatMap { it.second.getOrDefault(emptyList()) }
                 .sortedByDescending { it.seeders }
-                .filter { r -> seen.add(TorrentStore.magnetHash(r.link) ?: r.link) }
+                .filter { r -> seen.add(magnetHash(r.link) ?: r.link) }
         }
         SearchOutcome(results, answers.filter { it.second.isFailure }.map { it.first })
     }

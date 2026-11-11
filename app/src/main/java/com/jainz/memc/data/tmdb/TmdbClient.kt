@@ -92,6 +92,41 @@ class TmdbClient(private val settings: Settings) {
         }
     }
 
+    /** What is trending on TMDB this week. */
+    suspend fun trending(tv: Boolean): List<SearchResult> {
+        val json = get(if (tv) "/trending/tv/week" else "/trending/movie/week")
+        return json.optJSONArray("results").objects().map {
+            SearchResult(
+                id = it.getLong("id"),
+                title = it.optString(if (tv) "name" else "title"),
+                year = it.optString(if (tv) "first_air_date" else "release_date").take(4).toIntOrNull(),
+                overview = it.optStringOrNull("overview"),
+                posterPath = it.optStringOrNull("poster_path"),
+                isTv = tv,
+            )
+        }.filter { it.title.isNotBlank() }
+    }
+
+    /** Movies and shows matching a name, most popular first. */
+    suspend fun searchAny(query: String): List<SearchResult> {
+        val json = get("/search/multi", mapOf("query" to query, "include_adult" to "false"))
+        return json.optJSONArray("results").objects().mapNotNull {
+            val tv = when (it.optString("media_type")) {
+                "tv" -> true
+                "movie" -> false
+                else -> return@mapNotNull null
+            }
+            SearchResult(
+                id = it.getLong("id"),
+                title = it.optString(if (tv) "name" else "title"),
+                year = it.optString(if (tv) "first_air_date" else "release_date").take(4).toIntOrNull(),
+                overview = it.optStringOrNull("overview"),
+                posterPath = it.optStringOrNull("poster_path"),
+                isTv = tv,
+            )
+        }.filter { it.title.isNotBlank() }
+    }
+
     suspend fun searchTv(query: String, year: Int?): List<SearchResult> {
         val json = get("/search/tv", mapOf("query" to query, "first_air_date_year" to year?.toString(), "include_adult" to "false"))
         return json.optJSONArray("results").objects().map {

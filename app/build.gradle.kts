@@ -150,9 +150,6 @@ dependencies {
     implementation(libs.coil.network)
     implementation(libs.okhttp)
     implementation(libs.smbj)
-    // BitTorrent engine (libtorrent) and its native library for 64-bit ARM.
-    implementation(libs.libtorrent4j)
-    implementation(libs.libtorrent4j.arm64)
     // ONNX Runtime with Qualcomm's QNN backend: runs the RIFE model on the Snapdragon NPU.
     implementation(libs.onnxruntime.qnn)
     implementation(libs.coroutines.android)

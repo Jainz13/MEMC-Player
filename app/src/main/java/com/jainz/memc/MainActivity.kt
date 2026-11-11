@@ -3,9 +3,9 @@ package com.jainz.memc
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
-import com.jainz.memc.torrent.Torrents
-import com.jainz.memc.ui.torrents.SourcesScreen
-import com.jainz.memc.ui.torrents.TorrentsScreen
+import com.jainz.memc.ui.explore.ExploreScreen
+import com.jainz.memc.ui.explore.ReleasesScreen
+import com.jainz.memc.ui.explore.SourcesScreen
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Movie
@@ -65,26 +65,6 @@ class MainActivity : ComponentActivity() {
         )
         super.onCreate(savedInstanceState)
         setContent { MemcTheme { AppRoot() } }
-        handleTorrentIntent(intent)
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        handleTorrentIntent(intent)
-    }
-
-    /** Magnet links and .torrent files opened from a browser or file manager. */
-    private fun handleTorrentIntent(intent: Intent?) {
-        val data = intent?.data ?: return
-        if (intent.action != Intent.ACTION_VIEW) return
-        val problem = if (data.scheme == "magnet") {
-            Torrents.addMagnet(this, data.toString())
-        } else {
-            val bytes = runCatching { contentResolver.openInputStream(data)?.use { it.readBytes() } }.getOrNull()
-            if (bytes == null) "Could not read that file" else Torrents.addTorrentFile(this, bytes)
-        }
-        Toast.makeText(this, problem ?: "Torrent added - see the Torrents tab", Toast.LENGTH_LONG).show()
-        intent.data = null
     }
 
     override fun onResume() {
@@ -105,7 +85,7 @@ private val tabs = listOf(
     Tab(Routes.MOVIES, "Movies", Icons.Filled.Movie),
     Tab(Routes.SHOWS, "TV Shows", Icons.Filled.Tv),
     Tab(Routes.LIBRARY, "Library", Icons.Filled.Folder),
-    Tab(Routes.TORRENTS, "Torrents", Icons.Filled.Download),
+    Tab(Routes.EXPLORE, "Explore", Icons.Filled.Explore),
     Tab(Routes.SEARCH, "Search", Icons.Filled.Search),
 )
 
@@ -118,7 +98,10 @@ object Routes {
     const val SETTINGS = "settings"
     const val UNIDENTIFIED = "unidentified"
     const val SOURCES = "sources"
-    const val TORRENTS = "torrents"
+    const val EXPLORE = "explore"
+    /** Sources for one title: [query] is what to search for, [title] what to show on top. */
+    fun releases(title: String, query: String, tv: Boolean) =
+        "releases?t=" + android.net.Uri.encode(title) + "&q=" + android.net.Uri.encode(query) + "&tv=$tv"
     fun movie(id: Long) = "movie/$id"
     fun show(id: Long) = "show/$id"
     fun folder(sourceId: Long, folder: String) = "folder/$sourceId?f=" + android.net.Uri.encode(folder)
@@ -173,7 +156,20 @@ private fun AppRoot() {
                 composable(Routes.SEARCH) { SearchScreen(nav) }
                 composable(Routes.SETTINGS) { SettingsScreen(nav) }
                 composable(Routes.UNIDENTIFIED) { UnidentifiedScreen(nav) }
-                composable(Routes.TORRENTS) { TorrentsScreen(nav) }
+                composable(Routes.EXPLORE) { ExploreScreen(nav) }
+                composable(
+                    "releases?t={t}&q={q}&tv={tv}",
+                    arguments = listOf(
+                        navArgument("t") { type = NavType.StringType; defaultValue = "" },
+                        navArgument("q") { type = NavType.StringType; defaultValue = "" },
+                        navArgument("tv") { type = NavType.BoolType; defaultValue = false },
+                    ),
+                ) {
+                    ReleasesScreen(
+                        nav, it.arguments?.getString("t") ?: "", it.arguments?.getString("q") ?: "",
+                        it.arguments?.getBoolean("tv") ?: false,
+                    )
+                }
                 composable(Routes.SOURCES) { SourcesScreen(nav) }
                 composable(
                     "movie/{id}",
