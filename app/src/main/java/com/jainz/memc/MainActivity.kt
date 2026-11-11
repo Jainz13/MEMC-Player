@@ -3,8 +3,9 @@ package com.jainz.memc
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
-import com.jainz.memc.torrent.TorrentEngine
+import com.jainz.memc.torrent.Torrents
 import com.jainz.memc.ui.torrents.SourcesScreen
+import com.jainz.memc.ui.torrents.TorrentsScreen
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -13,12 +14,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -75,12 +78,12 @@ class MainActivity : ComponentActivity() {
         val data = intent?.data ?: return
         if (intent.action != Intent.ACTION_VIEW) return
         val problem = if (data.scheme == "magnet") {
-            TorrentEngine.addMagnet(this, data.toString())
+            Torrents.addMagnet(this, data.toString())
         } else {
             val bytes = runCatching { contentResolver.openInputStream(data)?.use { it.readBytes() } }.getOrNull()
-            if (bytes == null) "Could not read that file" else TorrentEngine.addTorrentFile(this, bytes)
+            if (bytes == null) "Could not read that file" else Torrents.addTorrentFile(this, bytes)
         }
-        Toast.makeText(this, problem ?: "Torrent added - see Library → Torrents", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, problem ?: "Torrent added - see the Torrents tab", Toast.LENGTH_LONG).show()
         intent.data = null
     }
 
@@ -102,6 +105,7 @@ private val tabs = listOf(
     Tab(Routes.MOVIES, "Movies", Icons.Filled.Movie),
     Tab(Routes.SHOWS, "TV Shows", Icons.Filled.Tv),
     Tab(Routes.LIBRARY, "Library", Icons.Filled.Folder),
+    Tab(Routes.TORRENTS, "Torrents", Icons.Filled.Download),
     Tab(Routes.SEARCH, "Search", Icons.Filled.Search),
 )
 
@@ -114,6 +118,7 @@ object Routes {
     const val SETTINGS = "settings"
     const val UNIDENTIFIED = "unidentified"
     const val SOURCES = "sources"
+    const val TORRENTS = "torrents"
     fun movie(id: Long) = "movie/$id"
     fun show(id: Long) = "show/$id"
     fun folder(sourceId: Long, folder: String) = "folder/$sourceId?f=" + android.net.Uri.encode(folder)
@@ -144,7 +149,7 @@ private fun AppRoot() {
                                 }
                             },
                             icon = { Icon(t.icon, t.label) },
-                            label = { Text(t.label) },
+                            label = { Text(t.label, maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall) },
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = Palette.Accent,
                                 selectedTextColor = Palette.Accent,
@@ -168,6 +173,7 @@ private fun AppRoot() {
                 composable(Routes.SEARCH) { SearchScreen(nav) }
                 composable(Routes.SETTINGS) { SettingsScreen(nav) }
                 composable(Routes.UNIDENTIFIED) { UnidentifiedScreen(nav) }
+                composable(Routes.TORRENTS) { TorrentsScreen(nav) }
                 composable(Routes.SOURCES) { SourcesScreen(nav) }
                 composable(
                     "movie/{id}",

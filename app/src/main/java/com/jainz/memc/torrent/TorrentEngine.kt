@@ -3,16 +3,10 @@ package com.jainz.memc.torrent
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
-import android.os.Build
-import android.os.Environment
-import androidx.core.content.ContextCompat
 import com.jainz.memc.MemcApp
 import com.jainz.memc.data.scan.NameParser
-import com.jainz.memc.data.scan.ScanWorker
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.libtorrent4j.AlertListener
 import org.libtorrent4j.SessionHandle
 import org.libtorrent4j.SessionManager
@@ -28,24 +22,11 @@ import org.libtorrent4j.alerts.TorrentAlert
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-enum class TorrentPhase { DOWNLOADING, PAUSED, MOVING, DONE, FAILED }
-
-data class TorrentItem(
-    val id: String,
-    val name: String,
-    val phase: TorrentPhase,
-    val status: String,
-    val progress: Float,
-    val bytesPerSecond: Long = 0,
-    val peers: Int = 0,
-    val totalBytes: Long = 0,
-    /** Largest video file on the phone, playable while downloading and after. */
-    val playPath: String? = null,
-)
-
 /**
- * A plain BitTorrent client (libtorrent). Torrents are added from magnet links or .torrent
- * files, download to the phone, and can then be moved to a network share automatically.
+ * A plain BitTorrent client (libtorrent). It lives in the ":torrent" process, apart from the
+ * player and library: torrents are picked up from files the app writes ([TorrentStore]),
+ * commands arrive through [TorrentService], and progress goes back as broadcasts ([Torrents]).
+ * Nothing outside this process may touch this object.
  */
 object TorrentEngine {
 
@@ -65,92 +46,30 @@ object TorrentEngine {
     private val entries = ConcurrentHashMap<String, Entry>()
     private var session: SessionManager? = null
     private var sessionPaused = false
-    private val _items = MutableStateFlow<List<TorrentItem>>(emptyList())
-    val items: StateFlow<List<TorrentItem>> = _items.asStateFlow()
+    @Volatile private var finishedEvent = false
 
-    private fun storeDir(context: Context) = File(context.filesDir, "torrents").apply { mkdirs() }
+    // Settings, handed over by the app with every command.
+    @Volatile private var wifiOnly = true
+    @Volatile private var moveSource = 0L
+    @Volatile private var moveFolder = ""
 
-    /** Where downloads land: Movies/MEMC Downloads with full file access, else the app's own folder. */
-    fun saveDir(context: Context): File {
-        val full = Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()
-        val dir = if (full) {
-            File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "MEMC Downloads")
-        } else {
-            context.getExternalFilesDir("Torrents") ?: File(context.filesDir, "Torrents")
-        }
-        return dir.apply { mkdirs() }
+    fun applySettings(intent: Intent?) {
+        if (intent == null || !intent.hasExtra(Torrents.EXTRA_WIFI_ONLY)) return
+        wifiOnly = intent.getBooleanExtra(Torrents.EXTRA_WIFI_ONLY, true)
+        moveSource = intent.getLongExtra(Torrents.EXTRA_MOVE_SOURCE, 0L)
+        moveFolder = intent.getStringExtra(Torrents.EXTRA_MOVE_FOLDER) ?: ""
     }
 
-    fun hasSaved(context: Context): Boolean = storeDir(context).list()?.isNotEmpty() == true
+    val running: Boolean get() = session != null
 
     fun hasActive(): Boolean = entries.values.any {
         it.phase == TorrentPhase.DOWNLOADING || it.phase == TorrentPhase.MOVING
     }
 
-    // ---- Adding -----------------------------------------------------------------------------------
-
-    /** Returns null when added, otherwise a message explaining what is wrong with the link. */
-    fun addMagnet(context: Context, magnet: String): String? {
-        val uri = magnet.trim()
-        val id = magnetHash(uri) ?: return "That isn't a valid magnet link"
-        val name = Regex("[?&]dn=([^&]+)").find(uri)?.groupValues?.get(1)
-            ?.let { runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrNull() } ?: "Magnet $id".take(24)
-        if (entries.containsKey(id)) return "Already in the list"
-        File(storeDir(context), "$id.magnet").writeText(uri)
-        entries[id] = Entry(id, name)
-        publish()
-        startService(context)
-        return null
-    }
-
-    fun addTorrentFile(context: Context, bytes: ByteArray): String? {
-        val info = runCatching { TorrentInfo(bytes) }.getOrNull() ?: return "That isn't a valid .torrent file"
-        val id = info.infoHash().toHex().lowercase()
-        if (entries.containsKey(id)) return "Already in the list"
-        File(storeDir(context), "$id.torrent").writeBytes(bytes)
-        entries[id] = Entry(id, info.name())
-        publish()
-        startService(context)
-        return null
-    }
-
-    private fun startService(context: Context) {
-        runCatching { ContextCompat.startForegroundService(context, Intent(context, TorrentService::class.java)) }
-    }
-
-    private fun magnetHash(uri: String): String? {
-        val raw = Regex("xt=urn:btih:([A-Za-z0-9]+)").find(uri)?.groupValues?.get(1) ?: return null
-        return when (raw.length) {
-            40 -> raw.lowercase()
-            32 -> base32ToHex(raw)
-            else -> null
-        }
-    }
-
-    private fun base32ToHex(s: String): String? {
-        val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
-        var bits = 0L
-        var count = 0
-        val out = StringBuilder()
-        for (c in s.uppercase()) {
-            val v = alphabet.indexOf(c)
-            if (v < 0) return null
-            bits = (bits shl 5) or v.toLong()
-            count += 5
-            while (count >= 4) {
-                out.append(((bits shr (count - 4)) and 0xF).toString(16))
-                count -= 4
-            }
-            bits = bits and ((1L shl count) - 1)
-        }
-        return out.toString().take(40).takeIf { it.length == 40 }
-    }
-
     // ---- Session ----------------------------------------------------------------------------------
 
-    /** Starts the engine and re-adds everything saved from earlier runs. */
     @Synchronized
-    fun ensureStarted(context: Context) {
+    fun ensureStarted() {
         if (session != null) return
         val s = SessionManager()
         s.addListener(object : AlertListener {
@@ -161,6 +80,7 @@ object TorrentEngine {
             override fun alert(alert: Alert<*>) {
                 runCatching {
                     val handle = (alert as? TorrentAlert<*>)?.handle() ?: return
+                    if (!handle.isValid) return
                     val id = handle.infoHash().toHex().lowercase()
                     val entry = entries[id] ?: return
                     when (alert.type()) {
@@ -172,6 +92,10 @@ object TorrentEngine {
                             } else {
                                 entry.handle = handle
                                 handle.setFlags(TorrentFlags.SEQUENTIAL_DOWNLOAD)
+                                if (entry.phase == TorrentPhase.PAUSED) {
+                                    handle.unsetFlags(TorrentFlags.AUTO_MANAGED)
+                                    handle.pause()
+                                }
                             }
                         }
                         // Disk full, no permission to write, damaged data…
@@ -180,56 +104,65 @@ object TorrentEngine {
                 }
             }
         })
-        val params = SessionParams(SettingsPack().connectionsLimit(200).activeDownloads(4))
-        // Plain read/write file access. The default (memory-mapped files) crashes the app on
+        // Modest limits: a phone on Wi-Fi, usually with a video playing next door.
+        val settings = SettingsPack().connectionsLimit(80).activeDownloads(3).activeSeeds(1)
+        val params = SessionParams(settings)
+        // Plain read/write file access instead of memory-mapped files, which are unreliable on
         // Android's shared storage.
         params.setPosixDiskIO()
         s.start(params)
         session = s
         sessionPaused = false
-        val dir = saveDir(context)
-        storeDir(context).listFiles()?.forEach { f ->
-            val id = f.nameWithoutExtension
-            runCatching {
-                when (f.extension) {
-                    "magnet" -> {
-                        entries.getOrPut(id) { Entry(id, "Magnet $id".take(24)) }.requested = true
-                        s.download(f.readText(), dir, TorrentFlags.SEQUENTIAL_DOWNLOAD)
-                    }
-                    "torrent" -> {
-                        val info = TorrentInfo(f.readBytes())
-                        entries.getOrPut(id) { Entry(id, info.name()) }.requested = true
-                        s.download(info, dir)
-                    }
-                }
-            }.onFailure { e -> entries[id]?.let { it.phase = TorrentPhase.FAILED; it.message = e.message } }
-        }
-        publish()
     }
 
-    /** The engine itself could not start: say so on every waiting torrent instead of "Starting…" forever. */
-    fun startFailed(error: Throwable) {
+    /** Picks up torrents the app has written to the store folder. */
+    private fun syncStore(context: Context) {
+        val dir = TorrentStore.dir(context)
+        dir.listFiles()?.forEach { f ->
+            val id = f.nameWithoutExtension
+            if (entries.containsKey(id)) return@forEach
+            val name = when (f.extension) {
+                "magnet" -> runCatching { TorrentStore.magnetName(f.readText(), id) }.getOrDefault("Magnet")
+                "torrent" -> runCatching { TorrentStore.readTorrent(f.readBytes())?.name }.getOrNull() ?: "Torrent"
+                else -> return@forEach
+            }
+            entries[id] = Entry(id, name).apply {
+                if (File(dir, "$id.paused").exists()) phase = TorrentPhase.PAUSED
+            }
+        }
+    }
+
+    /** Hands waiting torrents to the engine. */
+    private fun addNew(context: Context) {
+        val s = session ?: return
+        val dir = TorrentStore.saveDir(context)
+        val store = TorrentStore.dir(context)
+        for (e in entries.values) {
+            if (e.handle != null || e.requested || e.phase != TorrentPhase.DOWNLOADING || e.finishing) continue
+            e.requested = true
+            val magnet = File(store, "${e.id}.magnet")
+            val torrent = File(store, "${e.id}.torrent")
+            runCatching {
+                when {
+                    magnet.exists() -> s.download(magnet.readText(), dir, TorrentFlags.SEQUENTIAL_DOWNLOAD)
+                    torrent.exists() -> s.download(TorrentInfo(torrent.readBytes()), dir)
+                    else -> error("The torrent's details are missing; add it again")
+                }
+            }.onFailure { err ->
+                e.phase = TorrentPhase.FAILED
+                e.message = "Could not start: ${err.message ?: err.javaClass.simpleName}"
+            }
+        }
+    }
+
+    /** The engine itself could not start: say so on every waiting torrent. */
+    fun startFailed(context: Context, error: Throwable) {
+        syncStore(context)
         entries.values.filter { it.phase == TorrentPhase.DOWNLOADING }.forEach {
             it.phase = TorrentPhase.FAILED
             it.message = "The torrent engine could not start: ${error.message ?: error.javaClass.simpleName}"
         }
-        publish()
-    }
-
-    /** Adds torrents queued since the engine started (called from the service loop). */
-    private fun addNew(context: Context) {
-        val s = session ?: return
-        val dir = saveDir(context)
-        for (e in entries.values) {
-            if (e.handle != null || e.requested || e.phase != TorrentPhase.DOWNLOADING || e.finishing) continue
-            e.requested = true
-            val magnet = File(storeDir(context), "${e.id}.magnet")
-            val torrent = File(storeDir(context), "${e.id}.torrent")
-            runCatching {
-                if (magnet.exists()) s.download(magnet.readText(), dir, TorrentFlags.SEQUENTIAL_DOWNLOAD)
-                else if (torrent.exists()) s.download(TorrentInfo(torrent.readBytes()), dir)
-            }.onFailure { err -> e.phase = TorrentPhase.FAILED; e.message = err.message }
-        }
+        publish(context)
     }
 
     @Synchronized
@@ -243,53 +176,74 @@ object TorrentEngine {
         }
     }
 
-    // ---- Controls ---------------------------------------------------------------------------------
+    // ---- Commands from the app --------------------------------------------------------------------
 
-    fun pause(id: String) {
-        val e = entries[id] ?: return
-        runCatching {
-            e.handle?.unsetFlags(TorrentFlags.AUTO_MANAGED)
-            e.handle?.pause()
+    fun command(context: Context, action: String?, id: String?) {
+        val store = TorrentStore.dir(context)
+        when (action) {
+            Torrents.ACTION_PAUSE -> id?.let { entries[it] }?.let { e ->
+                if (e.phase != TorrentPhase.DOWNLOADING) return@let
+                runCatching { File(store, "${e.id}.paused").createNewFile() }
+                runCatching {
+                    e.handle?.takeIf { it.isValid }?.let {
+                        it.unsetFlags(TorrentFlags.AUTO_MANAGED)
+                        it.pause()
+                    }
+                }
+                e.phase = TorrentPhase.PAUSED
+            }
+            Torrents.ACTION_RESUME -> {
+                if (id != null) File(store, "$id.paused").delete()
+                id?.let { entries[it] }?.let { e ->
+                    val hasFile = File(store, "${e.id}.magnet").exists() || File(store, "${e.id}.torrent").exists()
+                    if ((e.phase == TorrentPhase.PAUSED || e.phase == TorrentPhase.FAILED) && hasFile) {
+                        e.phase = TorrentPhase.DOWNLOADING
+                        e.message = null
+                        e.problem = null
+                        val handle = e.handle?.takeIf { runCatching { it.isValid }.getOrDefault(false) }
+                        if (handle != null) {
+                            runCatching {
+                                handle.setFlags(TorrentFlags.AUTO_MANAGED)
+                                handle.resume()
+                            }
+                        } else {
+                            e.handle = null
+                            e.requested = false
+                        }
+                    }
+                }
+            }
+            Torrents.ACTION_REMOVE -> if (id != null) {
+                val e = entries.remove(id)
+                File(store, "$id.magnet").delete()
+                File(store, "$id.torrent").delete()
+                File(store, "$id.paused").delete()
+                val handle = e?.handle
+                if (handle != null && e.phase != TorrentPhase.DONE && !e.finishing) {
+                    runCatching { if (handle.isValid) session?.remove(handle, SessionHandle.DELETE_FILES) }
+                }
+            }
+            Torrents.ACTION_CLEAR ->
+                entries.values.filter { it.phase == TorrentPhase.DONE }.forEach { entries.remove(it.id) }
         }
-        if (e.phase == TorrentPhase.DOWNLOADING) e.phase = TorrentPhase.PAUSED
-        publish()
-    }
-
-    fun resume(context: Context, id: String) {
-        val e = entries[id] ?: return
-        if (e.phase == TorrentPhase.PAUSED || e.phase == TorrentPhase.FAILED) {
-            e.phase = TorrentPhase.DOWNLOADING
-            e.message = null
-            runCatching { e.handle?.resume() }
-            publish()
-            startService(context)
-        }
-    }
-
-    /** Removes a torrent; unfinished downloads also delete their partial files. */
-    fun remove(context: Context, id: String) {
-        val e = entries.remove(id) ?: return
-        File(storeDir(context), "$id.magnet").delete()
-        File(storeDir(context), "$id.torrent").delete()
-        val handle = e.handle
-        if (handle != null && e.phase != TorrentPhase.DONE) {
-            runCatching { session?.remove(handle, SessionHandle.DELETE_FILES) }
-        }
-        publish()
+        publish(context)
     }
 
     // ---- Progress loop (driven by the service once a second) ------------------------------------------
 
     fun tick(context: Context) {
-        val s = session ?: return
-        val settings = MemcApp.graph.settings
+        val s = session ?: run {
+            publish(context)
+            return
+        }
         // Wi-Fi only: hold everything while on mobile data.
         val cm = context.getSystemService(ConnectivityManager::class.java)
-        val hold = settings.torrentWifiOnly.value && (cm == null || cm.activeNetwork == null || cm.isActiveNetworkMetered)
+        val hold = wifiOnly && (cm == null || cm.activeNetwork == null || cm.isActiveNetworkMetered)
         if (hold != sessionPaused) {
             runCatching { if (hold) s.pause() else s.resume() }
             sessionPaused = hold
         }
+        syncStore(context)
         addNew(context)
         for (e in entries.values) {
             val handle = e.handle ?: continue
@@ -306,75 +260,76 @@ object TorrentEngine {
                 }
             }
         }
-        publish(hold)
+        publish(context)
     }
 
     private fun finish(context: Context, e: Entry, handle: TorrentHandle) {
         val g = MemcApp.graph
         val save = handle.savePath()
-        val info = handle.torrentFile()
-        val storage = info?.files()
+        val storage = handle.torrentFile()?.files()
         val files = if (storage != null) {
             (0 until storage.numFiles()).map { File(storage.filePath(it, save)) }.filter { it.exists() }
         } else emptyList()
-        runCatching {
-            handle.unsetFlags(TorrentFlags.AUTO_MANAGED)
-            handle.pause()
-        }
+        // Take the torrent out of the engine before touching its files.
+        runCatching { session?.remove(handle) }
+        e.handle = null
         e.playPath = files.filter { NameParser.isVideo(it.name) }.maxByOrNull { it.length() }?.absolutePath
 
-        val targetId = g.settings.torrentMoveSource.value
+        val targetId = moveSource
+        val folder = moveFolder.trim('/', ' ')
         g.scope.launch {
-            val source = if (targetId > 0) g.db.sources().get(targetId) else null
+            val source = if (targetId > 0) runCatching { g.db.sources().get(targetId) }.getOrNull() else null
             if (source == null) {
-                runCatching { session?.remove(handle) }
                 forget(context, e.id)
                 e.phase = TorrentPhase.DONE
                 e.message = "Saved on this phone"
             } else {
                 e.phase = TorrentPhase.MOVING
-                publish()
+                publish(context)
                 try {
                     val total = files.sumOf { it.length() }.coerceAtLeast(1)
                     var before = 0L
-                    val folder = g.settings.torrentMoveFolder.value.trim('/', ' ')
                     for (f in files) {
                         val relative = f.absolutePath.removePrefix(save).trim('/')
                         val path = listOf(source.path.trim('/'), folder, relative).filter { it.isNotBlank() }.joinToString("/")
                         g.smb.upload(g.smb.location(source, path), f) { done -> e.moveProgress = (before + done).toFloat() / total }
                         before += f.length()
                     }
-                    runCatching { session?.remove(handle, SessionHandle.DELETE_FILES) }
-                    // Folders the torrent created are left empty by libtorrent's delete; clean up.
                     files.forEach { it.delete() }
+                    // Remove the (now empty) folder the torrent made.
+                    files.mapNotNull { it.parentFile }.distinct()
+                        .filter { it.absolutePath != File(save).absolutePath && it.list()?.isEmpty() == true }
+                        .forEach { it.delete() }
                     forget(context, e.id)
                     e.playPath = null
                     e.phase = TorrentPhase.DONE
                     e.message = "Moved to ${source.name}" + if (folder.isNotBlank()) "/$folder" else ""
-                } catch (err: Exception) {
+                } catch (err: Throwable) {
                     e.phase = TorrentPhase.FAILED
                     e.message = "Downloaded, but moving to ${source.name} failed: ${err.message}. The files are still on the phone."
-                    runCatching { session?.remove(handle) }
                     forget(context, e.id)
                 }
             }
-            publish()
-            ScanWorker.enqueue(context.applicationContext)
+            finishedEvent = true
+            publish(context)
         }
     }
 
     private fun forget(context: Context, id: String) {
-        File(storeDir(context), "$id.magnet").delete()
-        File(storeDir(context), "$id.torrent").delete()
+        val store = TorrentStore.dir(context)
+        File(store, "$id.magnet").delete()
+        File(store, "$id.torrent").delete()
+        File(store, "$id.paused").delete()
     }
 
-    fun clearFinished() {
-        entries.values.filter { it.phase == TorrentPhase.DONE }.forEach { entries.remove(it.id) }
-        publish()
-    }
+    /** Current list, for the notification. */
+    @Volatile var snapshot: List<TorrentItem> = emptyList()
+        private set
 
-    private fun publish(onHold: Boolean = sessionPaused) {
-        _items.value = entries.values.sortedBy { it.name.lowercase() }.map { e ->
+    /** Sends the current list to the app. */
+    fun publish(context: Context) {
+        val onHold = sessionPaused
+        val list = entries.values.sortedBy { it.name.lowercase() }.map { e ->
             val handle = e.handle
             val st = if (e.phase == TorrentPhase.DOWNLOADING || e.phase == TorrentPhase.PAUSED) {
                 runCatching { handle?.takeIf { it.isValid }?.status() }.getOrNull()
@@ -386,7 +341,7 @@ object TorrentEngine {
                 TorrentPhase.MOVING -> "Moving to the share…"
                 TorrentPhase.PAUSED -> "Paused"
                 TorrentPhase.DOWNLOADING -> when {
-                    onHold -> "Waiting for Wi-Fi"
+                    onHold -> "Waiting for Wi-Fi (change in Settings → Torrents)"
                     st == null -> "Starting…"
                     state == "DOWNLOADING_METADATA" -> "Getting torrent details…"
                     state == "CHECKING_FILES" || state == "CHECKING_RESUME_DATA" -> "Checking files…"
@@ -408,6 +363,18 @@ object TorrentEngine {
                 peers = st?.numPeers() ?: 0,
                 totalBytes = st?.totalWanted() ?: 0,
                 playPath = e.playPath,
+            )
+        }
+        snapshot = list
+        val finished = finishedEvent
+        finishedEvent = false
+        runCatching {
+            val json = JSONArray()
+            list.forEach { json.put(it.toJson()) }
+            context.sendBroadcast(
+                Intent(Torrents.ACTION_STATE).setPackage(context.packageName)
+                    .putExtra("items", json.toString())
+                    .putExtra("finished", finished)
             )
         }
     }

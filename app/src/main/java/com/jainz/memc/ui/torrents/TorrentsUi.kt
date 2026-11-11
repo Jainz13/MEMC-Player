@@ -2,6 +2,7 @@ package com.jainz.memc.ui.torrents
 
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -15,14 +16,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,6 +44,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,7 +58,9 @@ import com.jainz.memc.Routes
 import com.jainz.memc.torrent.Feed
 import com.jainz.memc.torrent.FeedItem
 import com.jainz.memc.torrent.Feeds
-import com.jainz.memc.torrent.TorrentEngine
+import com.jainz.memc.torrent.SearchOutcome
+import com.jainz.memc.torrent.TorrentSearch
+import com.jainz.memc.torrent.Torrents
 import com.jainz.memc.torrent.TorrentItem
 import com.jainz.memc.torrent.TorrentPhase
 import com.jainz.memc.ui.Format
@@ -60,30 +68,207 @@ import com.jainz.memc.ui.Play
 import com.jainz.memc.ui.components.EmptyMessage
 import com.jainz.memc.ui.components.SectionTitle
 import com.jainz.memc.ui.theme.Palette
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
-/** Torrent list with add / sources buttons, shown in the Library tab. */
+/** The Torrents tab: search across providers, and the list of downloads. */
 @Composable
-fun TorrentsSection(nav: NavController) {
-    val items by TorrentEngine.items.collectAsStateWithLifecycle()
+fun TorrentsScreen(nav: NavController) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val torrents by Torrents.items.collectAsStateWithLifecycle()
+    var query by rememberSaveable { mutableStateOf("") }
+    var outcome by remember { mutableStateOf<SearchOutcome?>(null) }
+    var searching by remember { mutableStateOf(false) }
+    var searchJob by remember { mutableStateOf<Job?>(null) }
+    var added by remember { mutableStateOf(setOf<String>()) }
     var adding by remember { mutableStateOf(false) }
-    Column {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionTitle("Torrents", Modifier.weight(1f).padding(top = 12.dp))
-            if (items.any { it.phase == TorrentPhase.DONE }) {
-                TextButton(onClick = { TorrentEngine.clearFinished() }, modifier = Modifier.padding(top = 12.dp)) { Text("Clear finished") }
+    var choosing by remember { mutableStateOf(false) }
+    val showResults = searching || outcome != null
+
+    fun closeSearch() {
+        searchJob?.cancel()
+        searching = false
+        outcome = null
+    }
+
+    fun search() {
+        val words = query.trim()
+        if (words.isBlank()) return
+        searchJob?.cancel()
+        outcome = null
+        searching = true
+        searchJob = scope.launch {
+            outcome = runCatching { TorrentSearch.search(context, words) }
+                .getOrElse { SearchOutcome(emptyList(), listOf("the search")) }
+            searching = false
+        }
+    }
+
+    BackHandler(enabled = showResults) { closeSearch() }
+
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+        item {
+            Text(
+                "Torrents",
+                style = MaterialTheme.typography.headlineLarge,
+                modifier = Modifier.statusBarsPadding().padding(start = 20.dp, top = 12.dp, bottom = 4.dp),
+            )
+        }
+        item {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = query, onValueChange = { query = it },
+                    label = { Text("Search torrents") },
+                    singleLine = true, modifier = Modifier.weight(1f),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { search() }),
+                    trailingIcon = {
+                        if (query.isNotEmpty() || showResults) {
+                            IconButton(onClick = { query = ""; closeSearch() }) { Icon(Icons.Filled.Close, "Clear search") }
+                        }
+                    },
+                )
+                TextButton(enabled = query.isNotBlank(), onClick = { search() }) { Text("Search") }
             }
         }
-        items.forEach { TorrentRow(it) }
-        Row(Modifier.padding(horizontal = 20.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { adding = true }) {
-                Icon(Icons.Filled.Add, null)
-                Text("  Add torrent")
+
+        if (showResults) {
+            val results = outcome?.results ?: emptyList()
+            if (searching) {
+                item {
+                    Row(Modifier.fillMaxWidth().padding(32.dp), horizontalArrangement = Arrangement.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
             }
-            OutlinedButton(onClick = { nav.navigate(Routes.SOURCES) }) { Text("Sources") }
+            outcome?.let { o ->
+                if (o.failed.isNotEmpty()) {
+                    item {
+                        Text(
+                            "No answer from: ${o.failed.joinToString(", ")}",
+                            style = MaterialTheme.typography.bodySmall, color = Palette.TextFaint,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                        )
+                    }
+                }
+                if (o.results.isEmpty()) {
+                    item {
+                        EmptyMessage(
+                            "Nothing found",
+                            if (TorrentSearch.enabled(context).isEmpty()) "No search providers are switched on."
+                            else "No provider had a torrent for \"${query.trim()}\".",
+                        ) { OutlinedButton(onClick = { choosing = true }) { Text("Providers") } }
+                    }
+                }
+            }
+            items(results, key = { it.link }) { r ->
+                val isAdded = r.link in added
+                Column(
+                    Modifier.fillMaxWidth().clickable(enabled = !isAdded) {
+                        scope.launch {
+                            val problem = runCatching {
+                                if (r.link.startsWith("magnet:")) Torrents.addMagnet(context, r.link)
+                                else Torrents.addTorrentFile(context, Feeds.download(r.link))
+                            }.getOrElse { it.message ?: "Could not add it" }
+                            if (problem == null) added = added + r.link
+                            Toast.makeText(context, problem ?: "Added to your torrents", Toast.LENGTH_SHORT).show()
+                        }
+                    }.padding(horizontal = 20.dp, vertical = 10.dp)
+                ) {
+                    Text(r.title, style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        listOfNotNull(
+                            if (isAdded) "Added" else null,
+                            if (r.sizeBytes > 0) Format.size(r.sizeBytes) else null,
+                            if (r.seeders >= 0) "${r.seeders} seeders" else null,
+                            r.provider,
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (isAdded) Palette.Accent else Palette.TextDim,
+                    )
+                }
+            }
+        } else {
+            if (torrents.isEmpty()) {
+                item {
+                    EmptyMessage(
+                        "No torrents yet",
+                        "Search above, or add a magnet link or .torrent file. Finished downloads show up in your library.",
+                    )
+                }
+            }
+            items(torrents, key = { it.id }) { TorrentRow(it) }
+            item {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(onClick = { adding = true }) {
+                        Icon(Icons.Filled.Add, null)
+                        Text("  Add")
+                    }
+                    OutlinedButton(onClick = { choosing = true }) { Text("Providers") }
+                    OutlinedButton(onClick = { nav.navigate(Routes.SOURCES) }) { Text("My sources") }
+                }
+            }
+            if (torrents.any { it.phase == TorrentPhase.DONE }) {
+                item {
+                    TextButton(onClick = { Torrents.clearFinished(context) }, modifier = Modifier.padding(horizontal = 8.dp)) {
+                        Text("Clear finished")
+                    }
+                }
+            }
+            item {
+                Text(
+                    "Only download what you have the right to. Where finished downloads go (phone or network share) " +
+                        "and Wi-Fi only are in Settings → Torrents.",
+                    style = MaterialTheme.typography.bodySmall, color = Palette.TextFaint,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                )
+            }
         }
     }
     if (adding) AddTorrentDialog { adding = false }
+    if (choosing) ProvidersDialog { choosing = false }
+}
+
+/** Switches the built-in search providers on and off. */
+@Composable
+private fun ProvidersDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    var enabled by remember { mutableStateOf(TorrentSearch.enabled(context)) }
+    val own = remember { Feeds.list(context).filter { it.needsQuery || it.torznab } }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Search providers") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                TorrentSearch.providers.forEach { p ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable {
+                            enabled = if (p.id in enabled) enabled - p.id else enabled + p.id
+                            TorrentSearch.setEnabled(context, enabled)
+                        }.padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(checked = p.id in enabled, onCheckedChange = null)
+                        Column(Modifier.padding(start = 12.dp)) {
+                            Text(p.name, style = MaterialTheme.typography.bodyLarge)
+                            Text(p.about, style = MaterialTheme.typography.bodySmall, color = Palette.TextDim)
+                        }
+                    }
+                }
+                Text(
+                    if (own.isEmpty()) "Your own Jackett / Prowlarr addresses (My sources) are searched too once added."
+                    else "Also searched: ${own.joinToString(", ") { it.name }} (My sources).",
+                    style = MaterialTheme.typography.bodySmall, color = Palette.TextFaint,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
 }
 
 @Composable
@@ -122,16 +307,16 @@ private fun TorrentRow(item: TorrentItem) {
             }
             Row {
                 when (item.phase) {
-                    TorrentPhase.DOWNLOADING -> TextButton(onClick = { TorrentEngine.pause(item.id) }) { Text("Pause") }
+                    TorrentPhase.DOWNLOADING -> TextButton(onClick = { Torrents.pause(context, item.id) }) { Text("Pause") }
                     TorrentPhase.PAUSED, TorrentPhase.FAILED ->
-                        TextButton(onClick = { TorrentEngine.resume(context, item.id) }) { Text("Resume") }
+                        TextButton(onClick = { Torrents.resume(context, item.id) }) { Text("Resume") }
                     else -> Unit
                 }
                 item.playPath?.let { path ->
                     TextButton(onClick = { Play.uri(context, Uri.fromFile(java.io.File(path)).toString(), item.name) }) { Text("Play") }
                 }
                 if (item.phase != TorrentPhase.MOVING) {
-                    TextButton(onClick = { TorrentEngine.remove(context, item.id) }) {
+                    TextButton(onClick = { Torrents.remove(context, item.id) }) {
                         Text(if (item.phase == TorrentPhase.DONE) "Hide" else "Remove")
                     }
                 }
@@ -148,7 +333,7 @@ private fun AddTorrentDialog(onDismiss: () -> Unit) {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             val bytes = runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-            error = if (bytes == null) "Could not read that file" else TorrentEngine.addTorrentFile(context, bytes)
+            error = if (bytes == null) "Could not read that file" else Torrents.addTorrentFile(context, bytes)
             if (error == null) onDismiss()
         }
     }
@@ -174,7 +359,7 @@ private fun AddTorrentDialog(onDismiss: () -> Unit) {
         },
         confirmButton = {
             TextButton(enabled = magnet.isNotBlank(), onClick = {
-                error = TorrentEngine.addMagnet(context, magnet)
+                error = Torrents.addMagnet(context, magnet)
                 if (error == null) onDismiss()
             }) { Text("Add") }
         },
@@ -271,10 +456,10 @@ fun SourcesScreen(nav: NavController) {
                         Modifier.fillMaxWidth().clickable {
                             scope.launch {
                                 val problem = runCatching {
-                                    if (item.link.startsWith("magnet:")) TorrentEngine.addMagnet(context, item.link)
-                                    else TorrentEngine.addTorrentFile(context, Feeds.download(item.link))
+                                    if (item.link.startsWith("magnet:")) Torrents.addMagnet(context, item.link)
+                                    else Torrents.addTorrentFile(context, Feeds.download(item.link))
                                 }.getOrElse { it.message ?: "Could not add it" }
-                                Toast.makeText(context, problem ?: "Added - see Library → Torrents", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, problem ?: "Added to your torrents", Toast.LENGTH_SHORT).show()
                             }
                         }.padding(horizontal = 20.dp, vertical = 10.dp)
                     ) {

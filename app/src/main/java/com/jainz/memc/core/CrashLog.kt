@@ -31,7 +31,11 @@ object CrashLog {
             }
             previous?.uncaughtException(thread, error)
         }
-        runCatching { collectExitReasons(app) }
+    }
+
+    /** Reads crashes Android recorded since the last start. Call from the main process only. */
+    fun collect(context: Context) {
+        runCatching { collectExitReasons(context.applicationContext) }
     }
 
     fun read(context: Context): String? =
@@ -98,7 +102,13 @@ object CrashLog {
         // A Java crash already wrote its own detailed report.
         if (bad.reason == ApplicationExitInfo.REASON_CRASH && read(context) != null) return
 
-        val reason = when (bad.reason) {
+        val torrent = bad.processName?.endsWith(":torrent") == true
+        // The engine being closed for memory while idle is routine, not worth a report.
+        if (torrent && bad.reason == ApplicationExitInfo.REASON_LOW_MEMORY) return
+        val reason = when {
+            torrent -> "The torrent engine crashed (it runs separately; the rest of the app was not affected)"
+            else -> null
+        } ?: when (bad.reason) {
             ApplicationExitInfo.REASON_CRASH_NATIVE -> "Native crash (GPU driver, video decoder or other system library)"
             ApplicationExitInfo.REASON_ANR -> "App froze and was closed by Android (not responding)"
             ApplicationExitInfo.REASON_LOW_MEMORY -> "Closed by Android because the phone ran out of memory"

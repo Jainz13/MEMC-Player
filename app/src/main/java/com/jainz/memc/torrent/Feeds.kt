@@ -64,7 +64,10 @@ object Feeds {
      * Loads a source. With search words: the server searches when the address supports it
      * ({query} or Torznab), otherwise the feed's own list is filtered by title.
      */
-    suspend fun load(feed: Feed, query: String): List<FeedItem> = withContext(Dispatchers.IO) {
+    suspend fun load(feed: Feed, query: String): List<FeedItem> = withContext(Dispatchers.IO) { loadBlocking(feed, query) }
+
+    /** Same as [load], for callers already on a background thread. */
+    fun loadBlocking(feed: Feed, query: String): List<FeedItem> {
         val words = query.trim()
         val address = when {
             feed.needsQuery -> feed.url.replace("{query}", URLEncoder.encode(words, "UTF-8"))
@@ -118,11 +121,9 @@ object Feeds {
         } catch (e: Exception) {
             throw IOException("The answer from that address isn't a feed this app can read.")
         }
-        if (feed.needsQuery || feed.torznab || words.isBlank()) items
-        else {
-            val parts = words.lowercase().split(Regex("\\s+")).filter { it.isNotBlank() }
-            items.filter { item -> parts.all { it in item.title.lowercase() } }
-        }
+        if (feed.needsQuery || feed.torznab || words.isBlank()) return items
+        val parts = words.lowercase().split(Regex("\\s+")).filter { it.isNotBlank() }
+        return items.filter { item -> parts.all { it in item.title.lowercase() } }
     }
 
     suspend fun download(url: String): ByteArray = withContext(Dispatchers.IO) {
@@ -130,6 +131,13 @@ object Feeds {
             if (!resp.isSuccessful) throw IOException("Could not fetch the .torrent file (error ${resp.code})")
             resp.body?.bytes() ?: throw IOException("Empty .torrent file")
         }
+    }
+
+    /** "1.4 GiB" → bytes. */
+    private fun sizeFromText(text: String): Long {
+        val m = Regex("([0-9.]+)\\s*([KMGT])i?B", RegexOption.IGNORE_CASE).find(text) ?: return 0L
+        val n = m.groupValues[1].toDoubleOrNull() ?: return 0L
+        return (n * Math.pow(1024.0, ("KMGT".indexOf(m.groupValues[2].uppercase()) + 1).toDouble())).toLong()
     }
 
     private fun parse(stream: java.io.InputStream): List<FeedItem> {
@@ -141,6 +149,7 @@ object Feeds {
         var title = ""
         var link = ""
         var magnet = ""
+        var hash = ""
         var enclosure = ""
         var size = 0L
         var seeders = -1
@@ -154,7 +163,7 @@ object Feeds {
                     when {
                         tag == "item" || tag == "entry" -> {
                             inItem = true
-                            title = ""; link = ""; magnet = ""; enclosure = ""; size = 0L; seeders = -1
+                            title = ""; link = ""; magnet = ""; hash = ""; enclosure = ""; size = 0L; seeders = -1
                         }
                         inItem && tag == "enclosure" -> {
                             enclosure = parser.getAttributeValue(null, "url") ?: ""
@@ -183,8 +192,13 @@ object Feeds {
                             tag == "size" || tag.endsWith(":contentlength") -> value.toLongOrNull()?.let { size = it }
                             tag.endsWith(":seeds") || tag.endsWith(":seeders") || tag == "seeders" -> value.toIntOrNull()?.let { seeders = it }
                             tag.endsWith(":magneturi") || tag.endsWith(":magneturl") -> if (value.startsWith("magnet:")) magnet = value
+                            tag.endsWith(":infohash") -> if (value.length == 40) hash = value
+                            tag.endsWith(":size") -> if (size == 0L) size = sizeFromText(value)
                             tag == "item" || tag == "entry" -> {
                                 inItem = false
+                                if (magnet.isBlank() && hash.isNotBlank()) {
+                                    magnet = "magnet:?xt=urn:btih:${hash.lowercase()}&dn=" + URLEncoder.encode(title, "UTF-8")
+                                }
                                 val best = listOf(magnet, enclosure, link).firstOrNull { it.startsWith("magnet:") }
                                     ?: listOf(enclosure, link).firstOrNull { it.startsWith("http") }
                                 if (best != null && title.isNotBlank()) items += FeedItem(title, best, size, seeders)

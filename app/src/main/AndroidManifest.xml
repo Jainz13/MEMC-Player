@@ -99,10 +99,12 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <!-- Torrent downloads keep running in the background. -->
+        <!-- Torrent downloads keep running in the background, in a process of their own so a
+             crash in the torrent engine cannot close the player. -->
         <service
             android:name=".torrent.TorrentService"
             android:exported="false"
+            android:process=":torrent"
             android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

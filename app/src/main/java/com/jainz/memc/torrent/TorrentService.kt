@@ -21,7 +21,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Keeps torrents downloading (and moving to the share) while the app is in the background. */
+/**
+ * Runs the torrent engine in its own process (":torrent"), so downloads carry on in the
+ * background and an engine crash can't close the rest of the app.
+ */
 class TorrentService : Service() {
 
     private var worker: Job? = null
@@ -40,6 +43,13 @@ class TorrentService : Service() {
                 return START_NOT_STICKY
             }
         }
+        TorrentEngine.applySettings(intent)
+        val action = intent?.action
+        if (action != null) {
+            val id = intent.getStringExtra(Torrents.EXTRA_ID)
+            val context = applicationContext
+            MemcApp.graph.scope.launch { runCatching { TorrentEngine.command(context, action, id) } }
+        }
         if (worker?.isActive != true) run()
         return START_NOT_STICKY
     }
@@ -51,11 +61,13 @@ class TorrentService : Service() {
         }
         val context = applicationContext
         worker = MemcApp.graph.scope.launch {
-            runCatching { TorrentEngine.ensureStarted(context) }.onFailure { TorrentEngine.startFailed(it) }
             var idleTicks = 0
             while (idleTicks < 3) {
+                if (!TorrentEngine.running) {
+                    runCatching { TorrentEngine.ensureStarted() }.onFailure { TorrentEngine.startFailed(context, it) }
+                }
                 runCatching { TorrentEngine.tick(context) }
-                val items = TorrentEngine.items.value
+                val items = TorrentEngine.snapshot
                 val active = items.filter { it.phase == TorrentPhase.DOWNLOADING || it.phase == TorrentPhase.MOVING }
                 idleTicks = if (TorrentEngine.hasActive()) 0 else idleTicks + 1
                 if (active.isNotEmpty()) {
