@@ -576,15 +576,28 @@ class PlayerActivity : ComponentActivity() {
             memc.npuStatus = "AI not started: the phone is hot - using the GPU engine until it cools"
             return
         }
+        if (NpuFlow.creating > 0) {
+            // Another screen of the app is already starting the model (for instance the player
+            // just before it reloaded): wait for that to finish, then pick it up.
+            memc.npuStatus = "AI model starting (first time can take a minute)…"
+            lifecycleScope.launch {
+                delay(1500)
+                if (!isDestroyed) startNpuIfWanted()
+            }
+            return
+        }
+        NpuFlow.resolveInterrupted(this)
         NpuFlow.state(this).let { st ->
-            if (st == "trying" || st.startsWith("failed")) {
-                memc.npuStatus = "AI is switched off because it failed or the phone shut down while it was starting. " +
-                    "Using the GPU engine. To try again: Settings → Smooth motion (MEMC) → NPU status → Try again."
+            if (st.startsWith("failed")) {
+                memc.npuStatus = "AI is switched off (${st.removePrefix("failed: ").take(120)}). Using the GPU engine. " +
+                    "To try again: Settings → Smooth motion (MEMC) → NPU status → Try again."
+                DebugRecorder.event("npu", memc.npuStatus)
                 return
             }
         }
         npuStarting = true
         memc.npuStatus = "AI model starting (first time can take a minute)…"
+        DebugRecorder.event("npu", "Starting the AI model")
         val appContext = applicationContext
         g.scope.launch {
             val result = runCatching { NpuFlow.create(appContext, NpuFlow.LIVE) }
@@ -597,11 +610,13 @@ class PlayerActivity : ComponentActivity() {
                         npuLive = n
                         memc.npu = n
                         memc.npuStatus = "AI on the NPU"
+                        DebugRecorder.event("npu", "AI model running on the NPU")
                         // Give the AI model a full buffer to start from.
                         prebuffer(minGapMs = 0)
                     }
                 }.onFailure { e ->
                     memc.npuStatus = "AI unavailable (${(e.message ?: e.javaClass.simpleName).take(120)}) - using the GPU engine"
+                    DebugRecorder.event("npu", memc.npuStatus)
                 }
             }
         }
@@ -649,11 +664,13 @@ class PlayerActivity : ComponentActivity() {
         memc.targetFps = fps
         memc.quality = quality
         memc.enabled = enabled
-        startNpuIfWanted()
         if (enabled && !memcInstalled) {
+            // The player reloads here; the reloaded player starts the AI model. Starting it
+            // now would hand the model to this screen just as it closes.
             restartAtPosition()
             return
         }
+        startNpuIfWanted()
         // 60 fps off and no picture processing: return to plain playback (untouched picture, less power).
         if (!enabled && memcInstalled && picture.boost <= 0f && !picture.autoHdr) {
             restartAtPosition()

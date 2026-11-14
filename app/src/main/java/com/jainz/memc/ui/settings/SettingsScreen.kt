@@ -97,7 +97,10 @@ fun SettingsScreen(nav: NavController) {
     val memcFps by st.memcTargetFps.flow.collectAsStateWithLifecycle()
     val memcOn by st.memcEnabled.flow.collectAsStateWithLifecycle()
     val npuExport by st.npuExport.flow.collectAsStateWithLifecycle()
-    var npuState by remember { mutableStateOf(NpuFlow.state(context)) }
+    var npuState by remember {
+        NpuFlow.resolveInterrupted(context)
+        mutableStateOf(NpuFlow.state(context))
+    }
     val hdrBoost by st.hdrBoost.flow.collectAsStateWithLifecycle()
     val autoHdr by st.autoHdr.flow.collectAsStateWithLifecycle()
     val memcQuality by st.memcQuality.flow.collectAsStateWithLifecycle()
@@ -346,7 +349,7 @@ fun SettingsScreen(nav: NavController) {
                         Text(
                             "NPU status: " + when {
                                 npuState == "ok" -> "working"
-                                npuState == "trying" -> "was starting when the app closed"
+                                npuState == "trying" -> "starting…"
                                 else -> npuState
                             },
                             style = MaterialTheme.typography.bodySmall,

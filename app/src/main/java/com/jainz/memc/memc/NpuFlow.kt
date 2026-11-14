@@ -93,7 +93,45 @@ class NpuFlow private constructor(
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("state", "") ?: ""
 
         fun setState(context: Context, state: String) {
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("state", state).commit()
+            val edit = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("state", state)
+            if (state == "trying") edit.putLong("tryingAt", System.currentTimeMillis())
+            edit.commit()
+        }
+
+        /** Number of start-ups running in this process right now. */
+        @Volatile var creating = 0
+            private set
+
+        /**
+         * A start-up that never finished leaves the state at "trying". That is only a reason to
+         * keep the NPU off if the app or the phone actually went down during it. If the app was
+         * simply closed, updated or swiped away while the model was being prepared, the state is
+         * cleared so the next attempt goes ahead. Does nothing while a start-up is still running.
+         */
+        fun resolveInterrupted(context: Context) {
+            if (state(context) != "trying" || creating > 0) return
+            val since = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong("tryingAt", 0L)
+            if (endedBadly(context, since)) {
+                setState(context, "failed: the app or the phone went down while the AI model was starting")
+            } else {
+                setState(context, "")
+            }
+        }
+
+        private fun endedBadly(context: Context, since: Long): Boolean {
+            if (android.os.Build.VERSION.SDK_INT < 30) return true
+            return runCatching {
+                val am = context.getSystemService(android.app.ActivityManager::class.java)
+                val last = am.getHistoricalProcessExitReasons(context.packageName, 0, 8)
+                    .filter { it.timestamp >= since - 1000 }
+                    .maxByOrNull { it.timestamp }
+                    // No record of the app ending: the phone itself lost power or restarted.
+                    ?: return true
+                last.reason == android.app.ApplicationExitInfo.REASON_CRASH_NATIVE ||
+                    last.reason == android.app.ApplicationExitInfo.REASON_CRASH ||
+                    last.reason == android.app.ApplicationExitInfo.REASON_ANR ||
+                    last.reason == android.app.ApplicationExitInfo.REASON_INITIALIZATION_FAILURE
+            }.getOrDefault(true)
         }
 
         fun hasModel(context: Context, m: Model): Boolean =
@@ -106,10 +144,7 @@ class NpuFlow private constructor(
          */
         @Synchronized
         fun create(context: Context, m: Model): NpuFlow {
-            val previous = state(context)
-            if (previous == "trying") {
-                setState(context, "failed: the NPU runtime crashed the app last time")
-            }
+            resolveInterrupted(context)
             state(context).let { if (it.startsWith("failed")) throw IllegalStateException(it.removePrefix("failed: ")) }
             if (!hasModel(context, m)) throw IllegalStateException("the AI model isn't included in this build")
             // Preparing the model is heavy work; never start it on a phone that is already hot.
@@ -119,6 +154,7 @@ class NpuFlow private constructor(
             }
 
             setState(context, "trying")
+            creating++
             try {
                 val dir = File(context.filesDir, "npu").apply { mkdirs() }
                 val model = File(dir, "${m.name}.onnx")
@@ -170,6 +206,8 @@ class NpuFlow private constructor(
             } catch (e: Throwable) {
                 setState(context, "failed: ${e.message ?: e.javaClass.simpleName}".take(300))
                 throw e
+            } finally {
+                creating--
             }
         }
     }
