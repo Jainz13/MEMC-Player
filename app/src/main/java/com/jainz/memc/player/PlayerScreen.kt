@@ -1,5 +1,6 @@
 package com.jainz.memc.player
 
+import androidx.compose.material.icons.filled.PhotoSizeSelectActual
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.FitScreen
 import android.view.SurfaceView
@@ -182,13 +183,22 @@ fun PlayerScreen(
     var memcActive by remember { mutableStateOf(false) }
     // Geometry: aspect-ratio override (null = the video's own) and zoom (1 = no zoom).
     var aspect by remember { mutableStateOf<Float?>(null) }
+    var naturalAspect by remember { mutableFloatStateOf(0f) }
     var zoomScale by remember { mutableFloatStateOf(1f) }
+    var originalSize by remember { mutableStateOf(false) }
     var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
 
     fun applyGeometry(view: PlayerView) {
         val frame = view.findViewById<AspectRatioFrameLayout>(androidx.media3.ui.R.id.exo_content_frame) ?: return
         val vs = player.videoSize
-        val natural = if (vs.width > 0 && vs.height > 0) vs.width * vs.pixelWidthHeightRatio / vs.height else 0f
+        // With the processing pipeline the player doesn't report a usable video size (the view
+        // stayed full-screen and the picture was stretched): take the engine's frame size.
+        val natural = when {
+            memc.procWidth > 0 && memc.procHeight > 0 -> memc.procWidth.toFloat() / memc.procHeight
+            vs.width > 0 && vs.height > 0 -> vs.width * vs.pixelWidthHeightRatio / vs.height
+            else -> 0f
+        }
+        naturalAspect = natural
         val ratio = aspect ?: natural
         if (ratio > 0f) frame.setAspectRatio(ratio)
         frame.scaleX = zoomScale
@@ -222,6 +232,7 @@ fun PlayerScreen(
                 fixedH = memc.procHeight
                 surface.holder.setFixedSize(fixedW, fixedH)
                 DebugRecorder.event("player", "Screen surface set to ${fixedW}x$fixedH")
+                playerViewRef?.let { applyGeometry(it) }
             }
             PlayerState.autoHdrActive = picture.autoHdr && picture.fakedHdr
             delay(250)
@@ -527,15 +538,42 @@ fun PlayerScreen(
                             }
                         }
                     }
-                    // One tap between "fit the whole picture" and "crop to fill the screen".
-                    val cropped = resizeMode != AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    // One button, three sizes: Fit (whole picture) -> Crop (fill the screen) ->
+                    // Original (the video's own pixels, no scaling) -> Fit.
+                    val isOriginal = originalSize
+                    val isCrop = !isOriginal && resizeMode == AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                     BarIcon(
-                        if (cropped) Icons.Filled.FitScreen else Icons.Filled.Crop,
-                        if (cropped) "Fit the whole picture on screen" else "Crop to fill the screen",
+                        when {
+                            isCrop -> Icons.Filled.Crop
+                            isOriginal -> Icons.Filled.PhotoSizeSelectActual
+                            else -> Icons.Filled.FitScreen
+                        },
+                        "Picture size: " + when { isCrop -> "crop"; isOriginal -> "original"; else -> "fit" } + ". Tap to change",
                     ) {
-                        resizeMode = if (cropped) AspectRatioFrameLayout.RESIZE_MODE_FIT else AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                        zoomScale = 1f
-                        flash(if (cropped) "Fit" else "Crop to fill")
+                        when {
+                            isCrop -> {
+                                // Original: one video pixel per screen pixel.
+                                val pv = playerViewRef
+                                val ratio = aspect ?: naturalAspect
+                                val sourceW = state.videoFormat?.width ?: 0
+                                val fitW = if (pv != null && ratio > 0f) minOf(pv.width.toFloat(), pv.height * ratio) else 0f
+                                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                zoomScale = if (sourceW > 0 && fitW > 0f) (sourceW / fitW).coerceIn(0.25f, 4f) else 1f
+                                originalSize = true
+                                flash("Original size")
+                            }
+                            isOriginal -> {
+                                originalSize = false
+                                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                zoomScale = 1f
+                                flash("Fit")
+                            }
+                            else -> {
+                                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                zoomScale = 1f
+                                flash("Crop to fill")
+                            }
+                        }
                         poke()
                     }
                     BarIcon(Icons.Filled.ClosedCaption, "Subtitles") { panel = PanelTab.SUBTITLES }

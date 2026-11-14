@@ -77,8 +77,10 @@ void main() {
         if (uMode == 1) {
             float nits = dot(rgb, K2020) * 1000.0;
             // Shadows keep their level: lifting them only amplifies noise and banding.
-            float gain = 1.0 + 0.8 * uBoost * smoothstep(2.0, 40.0, nits);
-            float boosted = softKnee(nits * gain, 400.0, uPeakNits);
+            // Full boost lifts mid-tones x2.5 (a 400-nit scene reaches 1000 nits); above 1000
+            // nits the curve bends towards the 2000-nit ceiling instead of clipping.
+            float gain = 1.0 + 1.5 * uBoost * smoothstep(2.0, 40.0, nits);
+            float boosted = softKnee(nits * gain, 1000.0, uPeakNits);
             rgb = scaleTo(rgb, nits, boosted);
         } else {
             // SDR frames are gamma-encoded here. Scaling R'G'B' together keeps hue and

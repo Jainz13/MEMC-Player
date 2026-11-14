@@ -22,9 +22,10 @@ class PictureControl(boost: Float, autoHdr: Boolean) {
     /** Shader mode of the last frame: 0 SDR, 1 HDR, 2 Auto HDR, -1 none yet. */
     @Volatile var lastMode: Int = -1
 
-    /** Where SDR white lands in Auto HDR: 300 nits, up to 600 with full boost. */
-    val sdrWhiteNits: Float get() = 300f + 300f * boost.coerceIn(0f, 1f)
-    val sdrPeakNits: Float get() = 1000f + 600f * boost.coerceIn(0f, 1f)
+    /** Where SDR white lands in Auto HDR: 300 nits, up to 1000 with full boost. */
+    val sdrWhiteNits: Float get() = 300f + 700f * boost.coerceIn(0f, 1f)
+    /** Ceiling for the brightest highlights: 1000 nits, up to 2000 with full boost. */
+    val sdrPeakNits: Float get() = 1000f + 1000f * boost.coerceIn(0f, 1f)
 
     internal fun needsShader(useHdr: Boolean): Boolean = boost > 0.001f || (useHdr && fakedHdr)
 }

@@ -1,5 +1,7 @@
 package com.jainz.memc.export
 
+import com.jainz.memc.memc.PerfStats
+import com.jainz.memc.core.DebugRecorder
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -66,6 +68,9 @@ class ExportService : Service() {
     private val progress = ProgressHolder()
     private var isForeground = false
     private var stats: String? = null
+    private var speedAt = 0L
+    private var speedFrames = 0L
+    private var speedText: String? = null
     private var heatListener: android.os.PowerManager.OnThermalStatusChangedListener? = null
     private var exportControl: MemcControl? = null
 
@@ -122,6 +127,9 @@ class ExportService : Service() {
         currentId = job.id
         withoutAudio = false
         ExportManager.update(job.id) {
+            speedAt = 0L
+            speedText = null
+            DebugRecorder.event("export", "Export started: ${it.title}")
             it.copy(status = ExportStatus.RUNNING, progress = 0, message = null, startedAt = System.currentTimeMillis())
         }
         acquireWakeLock()
@@ -231,7 +239,28 @@ class ExportService : Service() {
                 val t = transformer ?: return
                 if (t.getProgress(progress) == Transformer.PROGRESS_STATE_AVAILABLE) {
                     val p = progress.progress
-                    ExportManager.update(currentId) { it.copy(progress = p) }
+                    // Live speed and time left, from the frames the engine has produced.
+                    val now = System.currentTimeMillis()
+                    val frames = PerfStats.framesOut.get()
+                    if (speedAt == 0L) {
+                        speedAt = now
+                        speedFrames = frames
+                    } else if (now - speedAt >= 10_000) {
+                        val fps = (frames - speedFrames) * 1000.0 / (now - speedAt)
+                        speedAt = now
+                        speedFrames = frames
+                        val started = ExportManager.get(currentId)?.startedAt ?: now
+                        val left = if (p > 0) (now - started) / 60_000.0 * (100 - p) / p else -1.0
+                        speedText = String.format(
+                            java.util.Locale.US, "%.1f frames a second%s", fps,
+                            if (left >= 0) String.format(java.util.Locale.US, " · about %.0f min left", left) else "",
+                        )
+                        DebugRecorder.event(
+                            "export",
+                            "$p% · $speedText · heat=${exportControl?.thermalLevel} · ${exportControl?.npuStatus}",
+                        )
+                    }
+                    ExportManager.update(currentId) { it.copy(progress = p, message = speedText) }
                     val title = ExportManager.get(currentId)?.title ?: "video"
                     runCatching {
                         getSystemService(NotificationManager::class.java)

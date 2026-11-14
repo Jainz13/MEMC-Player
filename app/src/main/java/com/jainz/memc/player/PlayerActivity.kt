@@ -379,6 +379,8 @@ class PlayerActivity : ComponentActivity() {
             append(" | picture boost=${picture.boost} autoHdr=${picture.autoHdr} convertSdr=${picture.convertSdr} fakedHdr=${picture.fakedHdr}")
             append(" pipelineHdr=${picture.pipelineHdr} shaderMode=${picture.lastMode}")
             append(" | window brightness=${window.attributes.screenBrightness} colorMode=${window.colorMode}")
+            val surface = playerView?.videoSurfaceView
+            append(" | size reported=${player.videoSize.width}x${player.videoSize.height} view=${surface?.width}x${surface?.height} mode=${playerView?.resizeMode}")
             append(" | totals framesOut=${PerfStats.framesOut.get()} dropped=${PerfStats.dropped.get()}")
             append(" gpuMs=${PerfStats.gpuNs.get() / 1_000_000} npuMs=${PerfStats.npuNs.get() / 1_000_000} npuRuns=${PerfStats.npuRuns.get()}")
         }

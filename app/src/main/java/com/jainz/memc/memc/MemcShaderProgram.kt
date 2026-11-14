@@ -868,7 +868,7 @@ class MemcShaderProgram(
         private const val RECOVER_AFTER_NS = 30_000_000_000L
         private const val GOVERNOR_WINDOW = 48
         const val MAX_EASE = 4
-        private const val BOOST_PEAK_NITS = 1600f
+        private const val BOOST_PEAK_NITS = 2000f
 
         private fun program(context: Context, fragment: String): GlProgram =
             GlProgram(context, "memc/fullscreen.vert", "memc/$fragment").apply {
