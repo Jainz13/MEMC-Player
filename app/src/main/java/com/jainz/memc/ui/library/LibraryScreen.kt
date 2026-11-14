@@ -1,5 +1,10 @@
 package com.jainz.memc.ui.library
 
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
+import android.widget.Toast
+import com.jainz.memc.data.VideoFiles
+import com.jainz.memc.ui.components.DeleteVideosDialog
 import com.jainz.memc.BuildConfig
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -244,7 +249,11 @@ private fun IconTile(icon: ImageVector) {
 }
 
 @Composable
-private fun NavRow(icon: ImageVector, title: String, subtitle: String, onClick: () -> Unit) {
+private fun NavRow(
+    icon: ImageVector, title: String, subtitle: String,
+    trailing: (@Composable () -> Unit)? = null,
+    onClick: () -> Unit,
+) {
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -254,7 +263,7 @@ private fun NavRow(icon: ImageVector, title: String, subtitle: String, onClick: 
             Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Palette.TextDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = Palette.TextFaint)
+        if (trailing != null) trailing() else Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = Palette.TextFaint)
     }
 }
 
@@ -309,6 +318,18 @@ fun VideoRow(c: VideoCard, onClick: () -> Unit, trailing: @Composable () -> Unit
             TechBadges(v.tech, Modifier.padding(top = 4.dp))
         }
         trailing()
+        var menu by remember { mutableStateOf(false) }
+        var deleting by remember { mutableStateOf(false) }
+        Box {
+            IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More", tint = Palette.TextDim) }
+            DropdownMenu(menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(
+                    text = { Text("Delete file", color = Palette.Danger) },
+                    onClick = { menu = false; deleting = true },
+                )
+            }
+        }
+        if (deleting) DeleteVideosDialog(listOf(v), "this file", onDismiss = { deleting = false })
     }
 }
 
@@ -343,6 +364,34 @@ fun SmbBrowseScreen(nav: NavController, sourceId: Long, path: String) {
         }
     }
     val s = source
+    var deleteEntry by remember { mutableStateOf<SmbEntry?>(null) }
+    var deletingNow by remember { mutableStateOf(false) }
+    deleteEntry?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { if (!deletingNow) deleteEntry = null },
+            title = { Text("Delete this file?") },
+            text = {
+                Text(
+                    "${entry.name}\n\nThe file (${Format.size(entry.size)}) will be permanently deleted from " +
+                        "the network share \"${s?.name ?: ""}\". This can't be undone."
+                )
+            },
+            confirmButton = {
+                TextButton(enabled = !deletingNow, onClick = {
+                    val src = s ?: return@TextButton
+                    deletingNow = true
+                    scope.launch {
+                        val problem = VideoFiles.deleteOnShare(src, entry.path)
+                        Toast.makeText(context, problem?.let { "Not deleted: $it" } ?: "Deleted", Toast.LENGTH_LONG).show()
+                        deletingNow = false
+                        deleteEntry = null
+                        if (problem == null) reload++
+                    }
+                }) { Text(if (deletingNow) "Deleting…" else "Delete", color = Palette.Danger) }
+            },
+            dismissButton = { TextButton(enabled = !deletingNow, onClick = { deleteEntry = null }) { Text("Cancel") } },
+        )
+    }
     SubScreen(
         title = path.trimEnd('/').substringAfterLast('/').ifBlank { s?.name ?: "Network share" },
         subtitle = s?.let { "\\\\${it.host}\\${it.share}" + if (path.isNotBlank()) "\\" + path.replace('/', '\\') else "" },
@@ -369,6 +418,18 @@ fun SmbBrowseScreen(nav: NavController, sourceId: Long, path: String) {
                                 Icons.Filled.PlayCircle,
                                 e.name,
                                 Format.size(e.size) + (NameParser.detectTech(e.name).takeIf { it.isNotBlank() }?.let { "  ·  " + it.replace("|", " ") } ?: ""),
+                                trailing = {
+                                    var menu by remember { mutableStateOf(false) }
+                                    Box {
+                                        IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More", tint = Palette.TextDim) }
+                                        DropdownMenu(menu, onDismissRequest = { menu = false }) {
+                                            DropdownMenuItem(
+                                                text = { Text("Delete file", color = Palette.Danger) },
+                                                onClick = { menu = false; deleteEntry = e },
+                                            )
+                                        }
+                                    }
+                                },
                                 onClick = {
                                     scope.launch {
                                         val src = s ?: return@launch

@@ -1,5 +1,6 @@
 package com.jainz.memc.ui.movies
 
+import com.jainz.memc.ui.components.DeleteVideosDialog
 import com.jainz.memc.BuildConfig
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -88,6 +89,13 @@ fun MovieDetailScreen(nav: NavController, tmdbId: Long) {
 
     val m = movie
     val primary = files.firstOrNull()?.video
+    var deleting by remember { mutableStateOf(false) }
+    if (deleting && primary != null) {
+        DeleteVideosDialog(listOf(primary), "this movie's file", onDismiss = { deleting = false }) {
+            // Nothing left to show once the last copy is gone.
+            if (files.size <= 1) nav.popBackStack()
+        }
+    }
 
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize()) {
@@ -254,6 +262,12 @@ fun MovieDetailScreen(nav: NavController, tmdbId: Long) {
                         )
                     }
                     DropdownMenuItem(text = { Text("Fix match") }, onClick = { menu = false; fixing = true })
+                    if (primary != null) {
+                        DropdownMenuItem(
+                            text = { Text("Delete file", color = Palette.Danger) },
+                            onClick = { menu = false; deleting = true },
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("Refresh details") },
                         onClick = {

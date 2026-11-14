@@ -1,5 +1,6 @@
 package com.jainz.memc.ui.shows
 
+import com.jainz.memc.ui.components.DeleteVideosDialog
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -85,6 +86,7 @@ fun ShowDetailScreen(nav: NavController, tmdbId: Long) {
     var selected by rememberSaveable { mutableStateOf<Int?>(null) }
     var menu by remember { mutableStateOf(false) }
     var fixing by remember { mutableStateOf(false) }
+    var deletingSeason by remember { mutableStateOf(false) }
 
     val season = selected ?: seasons.firstOrNull()
     val episodes by remember(tmdbId, season) {
@@ -233,6 +235,12 @@ fun ShowDetailScreen(nav: NavController, tmdbId: Long) {
                         )
                     }
                     DropdownMenuItem(text = { Text("Fix match") }, onClick = { menu = false; fixing = true })
+                    if (season != null && episodes.isNotEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("Delete season $season files", color = Palette.Danger) },
+                            onClick = { menu = false; deletingSeason = true },
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("Refresh details") },
                         onClick = {
@@ -248,6 +256,18 @@ fun ShowDetailScreen(nav: NavController, tmdbId: Long) {
                     )
                 }
             }
+        }
+    }
+
+    if (deletingSeason && season != null) {
+        val count = episodes.size
+        DeleteVideosDialog(
+            episodes.map { it.video },
+            if (count == 1) "the episode of season $season" else "all $count episodes of season $season",
+            onDismiss = { deletingSeason = false },
+        ) { deleted ->
+            // Last season gone: the show has nothing left, so leave its page.
+            if (deleted >= count && seasons.size <= 1) nav.popBackStack() else selected = null
         }
     }
 
@@ -276,12 +296,17 @@ private fun EpisodeRow(e: VideoCard) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val v = e.video
+    var menu by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
+    if (deleting) {
+        DeleteVideosDialog(listOf(v), "this episode", onDismiss = { deleting = false })
+    }
     Row(
         Modifier
             .fillMaxWidth()
             .combinedClickable(
                 onClick = { Play.video(context, v.id) },
-                onLongClick = { scope.launch { MemcApp.graph.db.videos().setWatched(v.id, !v.watched) } },
+                onLongClick = { menu = true },
             )
             .padding(horizontal = 20.dp, vertical = 10.dp),
     ) {
@@ -316,11 +341,31 @@ private fun EpisodeRow(e: VideoCard) {
             }
             TechBadges(v.tech, Modifier.padding(top = 6.dp))
         }
-        if (v.uri.startsWith("smb://")) {
-            IconButton(onClick = {
-                Downloads.enqueue(context, v.uri, v.fileName, "${e.title} ${Format.episodeCode(v.season, v.episode)}")
-                Toast.makeText(context, "Downloading - see Library → Downloads", Toast.LENGTH_SHORT).show()
-            }) { Icon(Icons.Filled.Download, "Download to phone", tint = Palette.TextDim) }
+        Box {
+            IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More", tint = Palette.TextDim) }
+            DropdownMenu(menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(
+                    text = { Text(if (v.watched) "Mark as unwatched" else "Mark as watched") },
+                    onClick = {
+                        menu = false
+                        scope.launch { MemcApp.graph.db.videos().setWatched(v.id, !v.watched) }
+                    },
+                )
+                if (v.uri.startsWith("smb://")) {
+                    DropdownMenuItem(
+                        text = { Text("Download to phone") },
+                        onClick = {
+                            menu = false
+                            Downloads.enqueue(context, v.uri, v.fileName, "${e.title} ${Format.episodeCode(v.season, v.episode)}")
+                            Toast.makeText(context, "Downloading - see Library → Downloads", Toast.LENGTH_SHORT).show()
+                        },
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("Delete file", color = Palette.Danger) },
+                    onClick = { menu = false; deleting = true },
+                )
+            }
         }
     }
 }

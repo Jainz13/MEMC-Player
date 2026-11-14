@@ -225,6 +225,9 @@ class SmbPool(private val db: AppDatabase) {
         }
     }
 
+    /** Permanently deletes a file on the share. */
+    fun delete(loc: SmbLocation) = withShare(loc) { share -> share.rm(loc.smbPath) }
+
     fun list(loc: SmbLocation): List<SmbEntry> = withShare(loc) { share ->
         val base = loc.path.trim('/')
         share.list(loc.smbPath).mapNotNull { info ->
@@ -273,6 +276,8 @@ class SmbPool(private val db: AppDatabase) {
                 msg.contains("STATUS_LOGON_FAILURE") -> "Wrong username or password"
                 msg.contains("STATUS_BAD_NETWORK_NAME") -> "Share name not found on the server"
                 msg.contains("STATUS_ACCESS_DENIED") -> "Access denied - check the share permissions"
+                msg.contains("STATUS_SHARING_VIOLATION") -> "The file is in use (playing or being copied) - try again in a moment"
+                msg.contains("STATUS_MEDIA_WRITE_PROTECTED") -> "The share is read-only"
                 msg.contains("STATUS_OBJECT_PATH_NOT_FOUND") || msg.contains("STATUS_OBJECT_NAME_NOT_FOUND") ->
                     "Folder not found on the share"
                 msg.contains("UnknownHost", ignoreCase = true) || msg.contains("Unable to resolve") ->
