@@ -7,14 +7,17 @@ precision highp float;
 //   uMode 2: Auto HDR   - the SDR video was flagged as PQ BT.2020 so the pipeline runs in HDR;
 //                         undo that decoding, recover the original BT.709 picture, and expand
 //                         it into real HDR (inverse tone mapping).
-// Working-space conventions (Media3): HDR = linear BT.2020, 1.0 = 1000 nits.
+// Working-space conventions: HDR = linear BT.2020, stored as (1.0 = 1000 nits) x uStore.
+// uStore is 256 for HDR (see shaders/fragment_shader_oetf_es3.glsl for why) and 1 for SDR;
+// it is divided out on the way in and multiplied back on the way out.
 // Brightness is always changed by scaling all three channels of a pixel by the same factor,
 // so hue and saturation stay put (no washed-out look).
-uniform sampler2D uTex;
+uniform highp sampler2D uTex;
 uniform int uMode;
 uniform float uBoost;          // 0..1
 uniform float uSdrWhiteNits;   // Auto HDR: where SDR white lands
 uniform float uPeakNits;       // highlight ceiling
+uniform float uStore;          // storage scale of the incoming and outgoing values
 in vec2 vTexCoords;
 out vec4 outColor;
 
@@ -52,7 +55,7 @@ vec3 scaleTo(vec3 rgb, float lumIn, float lumOut) {
 
 void main() {
     vec4 c = texture(uTex, vTexCoords);
-    vec3 rgb = c.rgb;
+    vec3 rgb = c.rgb / uStore;
 
     if (uMode == 2) {
         // 1. Back to the clamped PQ-coded RGB the pipeline computed with the BT.2020 matrix.
@@ -90,5 +93,5 @@ void main() {
             if (m > 1.0) rgb /= m;   // keep the hue when a channel would clip
         }
     }
-    outColor = vec4(rgb, c.a);
+    outColor = vec4(rgb * uStore, c.a);
 }

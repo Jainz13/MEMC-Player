@@ -119,7 +119,10 @@ class MemcShaderProgram(
 
     private val coeffs = if (useHdr) floatArrayOf(0.2627f, 0.6780f, 0.0593f) else floatArrayOf(0.2126f, 0.7152f, 0.0722f)
     // Media3's HDR working space is linear with 1.0 = 1000 nits; bring ~100 nits to ~1.
-    private val lumaScale = if (useHdr) 10f else 3f
+    // HDR frames arrive as linear light with 1.0 = 1000 nits, stored 256x larger so that dark
+    // values survive 16-bit float textures (see assets/shaders/fragment_shader_oetf_es3.glsl).
+    private val store = if (useHdr) HDR_STORE else 1f
+    private val lumaScale = if (useHdr) 10f / HDR_STORE else 3f
 
     init {
         picture?.pipelineHdr = useHdr
@@ -482,6 +485,7 @@ class MemcShaderProgram(
                 p.setFloatUniform("uBoost", pic.boost.coerceIn(0f, 1f))
                 p.setFloatUniform("uSdrWhiteNits", pic.sdrWhiteNits)
                 p.setFloatUniform("uPeakNits", if (mode == 2) pic.sdrPeakNits else BOOST_PEAK_NITS)
+                p.setFloatUniform("uStore", store)
             }
         } else {
             pic?.lastMode = if (useHdr) 1 else 0
@@ -689,6 +693,7 @@ class MemcShaderProgram(
         draw(small, npuSmallProgram) { p ->
             p.setSamplerTexIdUniform("uTex", frames[i]!!.texId, 0)
             p.setIntUniform("uHdr", if (useHdr) 1 else 0)
+            p.setFloatUniform("uStore", store)
         }
         val pixels = npuPixels!!
         pixels.clear()
@@ -851,6 +856,8 @@ class MemcShaderProgram(
     companion object {
         /** GL_TIME_ELAPSED_EXT, from GL_EXT_disjoint_timer_query. */
         private const val GL_TIME_ELAPSED = 0x88BF
+        /** Must match STORE in the two overridden Media3 shaders. */
+        private const val HDR_STORE = 256f
         private const val BLOCK = 8
         private val VALID_DT = 4_000L..250_000L
         /** GPU memory for pre-rendered frames; the buffer is this divided by the frame size. */

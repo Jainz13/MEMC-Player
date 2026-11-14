@@ -629,6 +629,9 @@ class PlayerActivity : ComponentActivity() {
             // Auto HDR re-reads the video with different colour flags.
             videoIsSdr && autoHdr != picture.convertSdr -> restartAtPosition()
             needsPipeline && !memcInstalled -> restartAtPosition()
+            // Nothing needs the processing pipeline any more: go back to plain playback, where
+            // the decoder's picture goes to the screen untouched.
+            !needsPipeline && !memc.enabled && memcInstalled -> restartAtPosition()
         }
     }
 
@@ -641,6 +644,11 @@ class PlayerActivity : ComponentActivity() {
         memc.enabled = enabled
         startNpuIfWanted()
         if (enabled && !memcInstalled) {
+            restartAtPosition()
+            return
+        }
+        // 60 fps off and no picture processing: return to plain playback (untouched picture, less power).
+        if (!enabled && memcInstalled && picture.boost <= 0f && !picture.autoHdr) {
             restartAtPosition()
             return
         }

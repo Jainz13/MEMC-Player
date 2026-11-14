@@ -1,5 +1,6 @@
 package com.jainz.memc.player
 
+import android.view.SurfaceView
 import android.widget.Toast
 import androidx.compose.material.icons.filled.PhotoCamera
 import com.jainz.memc.core.DebugRecorder
@@ -203,11 +204,23 @@ fun PlayerScreen(
         onDispose { player.removeListener(listener) }
     }
 
+    var fixedW by remember { mutableStateOf(0) }
+    var fixedH by remember { mutableStateOf(0) }
     // Position ticker for the seek bar (and the MEMC badge).
     LaunchedEffect(Unit) {
         while (true) {
             state.tick()
             memcActive = memc.active && memc.enabled
+            // The processing pipeline fits each frame inside the screen surface, bars included,
+            // so stretching or re-shaping the view changed nothing. Giving the surface the
+            // frame's own size lets Crop, Stretch and the aspect options scale the picture again.
+            val surface = playerViewRef?.videoSurfaceView as? SurfaceView
+            if (surface != null && memc.procWidth > 0 && (memc.procWidth != fixedW || memc.procHeight != fixedH)) {
+                fixedW = memc.procWidth
+                fixedH = memc.procHeight
+                surface.holder.setFixedSize(fixedW, fixedH)
+                DebugRecorder.event("player", "Screen surface set to ${fixedW}x$fixedH")
+            }
             PlayerState.autoHdrActive = picture.autoHdr && picture.fakedHdr
             delay(250)
         }

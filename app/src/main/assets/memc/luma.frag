@@ -1,7 +1,7 @@
 #version 300 es
 precision highp float;
 // Full-resolution linear RGB -> perceptual luma at the motion-search resolution.
-uniform sampler2D uTex;
+uniform highp sampler2D uTex;
 uniform vec2 uOutTexel;     // 1.0 / output size
 uniform vec3 uCoeffs;       // BT.709 or BT.2020 luma weights
 uniform float uLumaScale;   // brings mid-tones to ~1 before the soft curve

@@ -4,9 +4,9 @@ precision highp float;
 // Each pixel follows its motion vector back into both frames and blends them.
 // Where motion is unreliable (bad match, occlusion, scene cut) it falls back to
 // the nearest real frame instead of smearing.
-uniform sampler2D uPrev;
-uniform sampler2D uCur;
-uniform sampler2D uMv;      // xy = current->previous vector (working pixels), z = match cost
+uniform highp sampler2D uPrev;
+uniform highp sampler2D uCur;
+uniform highp sampler2D uMv;      // xy = current->previous vector (working pixels), z = match cost
 uniform float uAlpha;
 uniform vec2 uMvToUv;       // 1.0 / working size
 uniform vec3 uCoeffs;

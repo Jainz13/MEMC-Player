@@ -7,10 +7,10 @@ precision highp float;
 // Export runs the model for each exact moment (uFlowScale = 1,1). Live playback runs it once
 // per source-frame pair at the midpoint and rescales the motion for other moments:
 // uFlowScale = (alpha / 0.5, (1 - alpha) / 0.5), with the blend following alpha.
-uniform sampler2D uPrev;
-uniform sampler2D uCur;
-uniform sampler2D uFlow;
-uniform sampler2D uMask;
+uniform highp sampler2D uPrev;
+uniform highp sampler2D uCur;
+uniform highp sampler2D uFlow;
+uniform highp sampler2D uMask;
 uniform vec2 uFlowToUv;   // 1.0 / model input size
 uniform vec2 uFlowScale;
 uniform float uAlpha;
