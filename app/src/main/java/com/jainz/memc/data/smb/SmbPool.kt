@@ -46,16 +46,20 @@ data class SmbEntry(
  */
 class SmbPool(private val db: AppDatabase) {
 
-    private val client = SMBClient(
+    private fun newClient(multiProtocol: Boolean) = SMBClient(
         SmbConfig.builder()
             .withSecurityProvider(BCSecurityProvider())
-            .withMultiProtocolNegotiate(true)
+            .withMultiProtocolNegotiate(multiProtocol)
             .withTimeout(30, TimeUnit.SECONDS)
             .withSoTimeout(45, TimeUnit.SECONDS)
             .withReadBufferSize(READ_CHUNK)
             .withDfsEnabled(false)
             .build()
     )
+
+    private val client = newClient(multiProtocol = true)
+    /** Second way of saying hello, for servers that hang up on the first one. */
+    private val plainClient by lazy { newClient(multiProtocol = false) }
 
     private val shares = HashMap<String, DiskShare>()
 
@@ -111,25 +115,48 @@ class SmbPool(private val db: AppDatabase) {
     // ---- Connections ----------------------------------------------------------
 
     @Synchronized
-    private fun share(loc: SmbLocation, fresh: Boolean = false): DiskShare {
+    private fun share(loc: SmbLocation, fresh: Boolean = false, plain: Boolean = false): DiskShare {
         val key = "${loc.host}:${loc.port}/${loc.share.lowercase()}/${loc.auth.user}"
         if (!fresh) shares[key]?.let { if (it.isConnected) return it }
-        shares.remove(key)?.let { runCatching { it.close() } }
-
-        val connection = client.connect(loc.host, loc.port)
-        val session = if (loc.auth.user.isBlank()) {
-            // Guest first (most home NAS shares), then anonymous.
-            runCatching { connection.authenticate(AuthenticationContext.guest()) }
-                .getOrElse { connection.authenticate(AuthenticationContext.anonymous()) }
-        } else {
-            connection.authenticate(
-                AuthenticationContext(loc.auth.user, loc.auth.password.toCharArray(), loc.auth.domain.ifBlank { null })
-            )
+        shares.remove(key)?.let { old ->
+            // Close the whole connection, not just the share: the library keeps connections
+            // per server and would otherwise hand the same dead one straight back.
+            runCatching { old.treeConnect.session.connection.close(true) }
+            runCatching { old.close() }
         }
-        val share = session.connectShare(loc.share) as? DiskShare
-            ?: throw IOException("\"${loc.share}\" is not a file share")
-        shares[key] = share
-        return share
+
+        val connection = (if (plain) plainClient else client).connect(loc.host, loc.port)
+        try {
+            val session = if (loc.auth.user.isBlank()) {
+                // Guest first (most home NAS shares), then anonymous.
+                runCatching { connection.authenticate(AuthenticationContext.guest()) }
+                    .getOrElse { connection.authenticate(AuthenticationContext.anonymous()) }
+            } else {
+                connection.authenticate(
+                    AuthenticationContext(loc.auth.user, loc.auth.password.toCharArray(), loc.auth.domain.ifBlank { null })
+                )
+            }
+            val share = session.connectShare(loc.share) as? DiskShare
+                ?: throw IOException("\"${loc.share}\" is not a file share")
+            shares[key] = share
+            return share
+        } catch (e: Exception) {
+            // Don't leave a half-open or dead connection behind for the next attempt.
+            runCatching { connection.close(true) }
+            throw e
+        }
+    }
+
+    /** The server (or the network) dropped the connection, as opposed to refusing the request. */
+    private fun dropped(e: Throwable): Boolean {
+        var t: Throwable? = e
+        while (t != null) {
+            if (t is java.net.SocketException || t is java.io.EOFException ||
+                t is com.hierynomus.protocol.transport.TransportException
+            ) return true
+            t = t.cause
+        }
+        return false
     }
 
     /** Runs [block] on the share; if the connection went stale, reconnects once and retries. */
@@ -141,7 +168,16 @@ class SmbPool(private val db: AppDatabase) {
             try {
                 block(share(loc, fresh = true))
             } catch (e2: Exception) {
-                throw if (e2 is IOException) e2 else IOException(friendlyError(e2), e2)
+                if (e2 is InterruptedException) throw e2
+                if (!dropped(e2)) throw if (e2 is IOException) e2 else IOException(friendlyError(e2), e2)
+                // Dropped again on a brand-new connection: wait a moment and try the other greeting.
+                try {
+                    Thread.sleep(600)
+                    block(share(loc, fresh = true, plain = true))
+                } catch (e3: Exception) {
+                    if (e3 is InterruptedException) throw e3
+                    throw IOException(friendlyError(e3), e3)
+                }
             }
         }
     }
@@ -221,6 +257,7 @@ class SmbPool(private val db: AppDatabase) {
         while (it.hasNext()) {
             val e = it.next()
             if (e.key.startsWith("$host:")) {
+                runCatching { e.value.treeConnect.session.connection.close(true) }
                 runCatching { e.value.close() }
                 it.remove()
             }
@@ -240,6 +277,9 @@ class SmbPool(private val db: AppDatabase) {
                     "Folder not found on the share"
                 msg.contains("UnknownHost", ignoreCase = true) || msg.contains("Unable to resolve") ->
                     "Server name not found - try its IP address"
+                msg.contains("Broken pipe", ignoreCase = true) || msg.contains("Connection reset", ignoreCase = true) ||
+                    msg.contains("EOF", ignoreCase = true) ->
+                    "The server dropped the connection. Check that the NAS is awake and on the same Wi-Fi, then scan again."
                 msg.contains("timed out", ignoreCase = true) || msg.contains("ConnectException") ->
                     "Server did not respond - is it on the same Wi-Fi?"
                 else -> msg
