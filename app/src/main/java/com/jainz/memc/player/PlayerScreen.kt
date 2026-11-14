@@ -1,5 +1,7 @@
 package com.jainz.memc.player
 
+import androidx.compose.material.icons.filled.Crop
+import androidx.compose.material.icons.filled.FitScreen
 import android.view.SurfaceView
 import android.widget.Toast
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -524,6 +526,17 @@ fun PlayerScreen(
                                 ).show()
                             }
                         }
+                    }
+                    // One tap between "fit the whole picture" and "crop to fill the screen".
+                    val cropped = resizeMode != AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    BarIcon(
+                        if (cropped) Icons.Filled.FitScreen else Icons.Filled.Crop,
+                        if (cropped) "Fit the whole picture on screen" else "Crop to fill the screen",
+                    ) {
+                        resizeMode = if (cropped) AspectRatioFrameLayout.RESIZE_MODE_FIT else AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        zoomScale = 1f
+                        flash(if (cropped) "Fit" else "Crop to fill")
+                        poke()
                     }
                     BarIcon(Icons.Filled.ClosedCaption, "Subtitles") { panel = PanelTab.SUBTITLES }
                     BarIcon(Icons.Filled.Audiotrack, "Audio") { panel = PanelTab.AUDIO }

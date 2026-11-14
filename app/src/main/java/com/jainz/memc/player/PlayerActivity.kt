@@ -632,6 +632,13 @@ class PlayerActivity : ComponentActivity() {
             // Nothing needs the processing pipeline any more: go back to plain playback, where
             // the decoder's picture goes to the screen untouched.
             !needsPipeline && !memc.enabled && memcInstalled -> restartAtPosition()
+            // The engine has up to a second of frames already rendered with the old setting,
+            // and renders nothing new while paused. Re-render from here so the change shows
+            // at once, paused or playing.
+            memcInstalled -> {
+                DebugRecorder.event("player", "Picture setting changed (boost=$boost): re-rendering from the current position")
+                player.seekTo(player.currentPosition)
+            }
         }
     }
 
