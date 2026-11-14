@@ -236,7 +236,7 @@ fun SettingsScreen(nav: NavController) {
         item {
             Card {
                 ToggleRow("Play next episode automatically", null, autoNext) { st.autoPlayNext.set(it) }
-                ToggleRow("Stats while playing", "CPU, GPU, NPU load, temperature and frame rate at the bottom of the player", showStats) { st.showStats.set(it) }
+                if (!BuildConfig.TV) ToggleRow("Stats while playing", "CPU, GPU, NPU load, temperature and frame rate at the bottom of the player", showStats) { st.showStats.set(it) }
                 Text("Double-tap skip", style = MaterialTheme.typography.bodyMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(5, 10, 15, 30).forEach { s ->
@@ -269,6 +269,7 @@ fun SettingsScreen(nav: NavController) {
             }
         }
 
+        if (!BuildConfig.TV) {
         // ---- Picture ----
         item { SectionTitle("Picture", Modifier.padding(top = 12.dp)) }
         item {
@@ -359,6 +360,7 @@ fun SettingsScreen(nav: NavController) {
             }
         }
 
+        }
         // ---- Audio ----
         item { SectionTitle("Audio", Modifier.padding(top = 12.dp)) }
         item {

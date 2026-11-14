@@ -50,13 +50,14 @@ jobs:
 
       - name: Fetch the NPU model
         run: |
-          mkdir -p app/src/main/assets/npu
+          # Phone variant only: the TV variant has no 60 fps engine.
+          mkdir -p app/src/phone/assets/npu
           for size in 640x352 448x256; do
-            curl -fsSL -o "app/src/main/assets/npu/rife_$size.onnx" \
+            curl -fsSL -o "app/src/phone/assets/npu/rife_$size.onnx" \
               "https://github.com/${{ github.repository }}/releases/download/npu-model/rife422lite_$size.onnx" \
               || echo "::warning::NPU model $size not found - building without it."
           done
-          ls -la app/src/main/assets/npu || true
+          ls -la app/src/phone/assets/npu || true
 
       - name: Build release APK
         env:
@@ -69,7 +70,8 @@ jobs:
       - name: Name APK
         run: |
           mkdir -p out
-          cp app/build/outputs/apk/release/*.apk "out/MEMC-Player-0.1.${{ github.run_number }}.apk"
+          cp app/build/outputs/apk/phone/release/*.apk "out/MEMC-Player-0.1.${{ github.run_number }}.apk"
+          cp app/build/outputs/apk/tv/release/*.apk "out/MEMC-Player-TV-0.1.${{ github.run_number }}.apk"
           ls -la out
 
       - uses: actions/upload-artifact@v4
@@ -85,6 +87,7 @@ jobs:
           name: MEMC Player 0.1.${{ github.run_number }}
           body: |
             Automatic build from commit ${{ github.sha }}.
-            On your phone: tap the APK below to download, then open it to install.
+            Phone: MEMC-Player-0.1.${{ github.run_number }}.apk - tap it to download, then open it to install.
+            Google TV / Android TV: MEMC-Player-TV-0.1.${{ github.run_number }}.apk (library and player only).
           files: out/*.apk
           make_latest: true

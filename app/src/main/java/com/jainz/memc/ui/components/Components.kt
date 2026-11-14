@@ -1,5 +1,13 @@
 package com.jainz.memc.ui.components
 
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.composed
+import com.jainz.memc.BuildConfig
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -81,6 +89,17 @@ fun Artwork(
 }
 
 /** 2:3 poster card with optional progress bar and watched tick. */
+/**
+ * On the TV variant, draws a clear ring around whatever the remote has selected. Put it before
+ * `clickable` in the modifier chain. Does nothing on the phone.
+ */
+fun Modifier.tvFocusRing(shape: Shape = CardShape): Modifier =
+    if (!BuildConfig.TV) this else composed {
+        var focused by remember { mutableStateOf(false) }
+        onFocusChanged { focused = it.hasFocus }
+            .then(if (focused) Modifier.border(3.dp, Palette.Accent, shape) else Modifier)
+    }
+
 @Composable
 fun PosterCard(
     url: String?,
@@ -94,6 +113,7 @@ fun PosterCard(
 ) {
     Column(
         (if (width != null) modifier.width(width) else modifier)
+            .tvFocusRing()
             .clip(CardShape)
             .clickable(onClick = onClick)
     ) {

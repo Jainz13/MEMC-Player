@@ -31,6 +31,13 @@ Galaxy S24 Ultra (Snapdragon 8 Gen 3). Infuse-style library, Nova-style features
   that hands magnet links to a torrent app of your choice. Only download what you have the
   right to.
 
+## TV version
+
+Each release also has a `MEMC-Player-TV` APK for Android TV / Google TV boxes such as the Google
+TV Streamer. It is the library and player only (no 60 fps engine, export or Explore) and is
+driven with the remote: OK pauses and shows the controls, left/right seek, up/down show the
+controls, Back hides them.
+
 ## Requirements
 
 Android 10 or newer, 64-bit ARM. The AI (NPU) mode needs a Snapdragon 8 Gen 3; everything else

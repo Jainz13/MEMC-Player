@@ -34,9 +34,25 @@ android {
         targetSdk = 36
         versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
         versionName = "0.1." + (System.getenv("VERSION_CODE") ?: "0")
+    }
 
-        // The app targets the Galaxy S24 Ultra (Snapdragon 8 Gen 3, 64-bit ARM).
-        ndk { abiFilters += listOf("arm64-v8a") }
+    // Two variants of the same app:
+    //  phone - everything, for the Galaxy S24 Ultra (Snapdragon 8 Gen 3, 64-bit ARM)
+    //  tv    - library and player for Android TV / Google TV boxes: no 60 fps engine, no export,
+    //          no Explore; remote-control navigation; 32- and 64-bit ARM
+    flavorDimensions += "device"
+    productFlavors {
+        create("phone") {
+            dimension = "device"
+            buildConfigField("boolean", "TV", "false")
+            ndk { abiFilters += listOf("arm64-v8a") }
+        }
+        create("tv") {
+            dimension = "device"
+            versionNameSuffix = "-tv"
+            buildConfigField("boolean", "TV", "true")
+            ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
+        }
     }
 
     signingConfigs {
@@ -151,6 +167,8 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.smbj)
     // ONNX Runtime with Qualcomm's QNN backend: runs the RIFE model on the Snapdragon NPU.
-    implementation(libs.onnxruntime.qnn)
+    // Only shipped in the phone variant; the TV variant compiles against it but never loads it.
+    "phoneImplementation"(libs.onnxruntime.qnn)
+    "tvCompileOnly"(libs.onnxruntime.qnn)
     implementation(libs.coroutines.android)
 }

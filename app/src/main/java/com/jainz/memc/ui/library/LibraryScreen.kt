@@ -1,5 +1,6 @@
 package com.jainz.memc.ui.library
 
+import com.jainz.memc.BuildConfig
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -114,7 +115,7 @@ fun LibraryScreen(nav: NavController) {
         }
 
         item { DownloadsSection() }
-        item { ExportsSection() }
+        if (!BuildConfig.TV) item { ExportsSection() }
 
         item { SectionTitle("Network shares", Modifier.padding(top = 12.dp)) }
         items(sources, key = { "s${it.id}" }) { s ->

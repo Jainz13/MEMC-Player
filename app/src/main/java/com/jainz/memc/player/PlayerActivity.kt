@@ -1,5 +1,6 @@
 package com.jainz.memc.player
 
+import com.jainz.memc.BuildConfig
 import android.app.PictureInPictureParams
 import android.content.Intent
 import android.content.res.Configuration
@@ -84,7 +85,8 @@ class PlayerActivity : ComponentActivity() {
         hideSystemBars()
 
         // A previous attempt showed this video can't go through the effect pipeline: play it plain.
-        val memcAllowed = !intent.getBooleanExtra(EXTRA_NO_MEMC, false)
+        // The TV variant has no effect pipeline at all (no 60 fps, no picture processing).
+        val memcAllowed = !BuildConfig.TV && !intent.getBooleanExtra(EXTRA_NO_MEMC, false)
         picture = PictureControl(
             // Without the effect pipeline nothing may be flagged as HDR, or SDR colours would be wrong.
             boost = if (memcAllowed) g.settings.hdrBoost.value / 100f else 0f,
@@ -97,6 +99,7 @@ class PlayerActivity : ComponentActivity() {
             targetFps = g.settings.memcTargetFps.value,
             quality = g.settings.memcQuality.value,
         )
+        if (BuildConfig.TV) memc.enabled = false
         // Frames are processed no larger than the screen: a 4K film on this panel is shown at
         // the panel's resolution anyway, and it cuts the GPU work by more than half.
         memc.maxLongSide = screenLongSide()
@@ -509,6 +512,7 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun startNpuIfWanted() {
+        if (BuildConfig.TV) return
         if (memc.quality != 3 || !memc.enabled || npuLive != null || npuStarting) return
         if (!NpuFlow.hasModel(this, NpuFlow.LIVE)) {
             memc.npuStatus = "AI model isn't in this build - using the GPU engine"

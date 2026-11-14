@@ -14,3 +14,4 @@
 *.jks
 *.keystore
 /app/src/main/assets/npu/
+/app/src/phone/assets/npu/

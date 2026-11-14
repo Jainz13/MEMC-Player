@@ -1,5 +1,11 @@
 package com.jainz.memc.ui.theme
 
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.material.ripple.RippleAlpha
+import androidx.compose.material3.RippleConfiguration
+import androidx.compose.material3.LocalRippleConfiguration
+import androidx.compose.material3.ExperimentalMaterial3Api
+import com.jainz.memc.BuildConfig
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -57,7 +63,17 @@ private val type = Typography().let { t ->
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MemcTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = scheme, typography = type, content = content)
+    MaterialTheme(colorScheme = scheme, typography = type) {
+        if (BuildConfig.TV) {
+            // From the sofa the default focus tint is invisible: make the selected item obvious.
+            val ripple = RippleConfiguration(
+                color = Palette.Accent,
+                rippleAlpha = RippleAlpha(draggedAlpha = 0.2f, focusedAlpha = 0.38f, hoveredAlpha = 0.12f, pressedAlpha = 0.3f),
+            )
+            CompositionLocalProvider(LocalRippleConfiguration provides ripple, content = content)
+        } else content()
+    }
 }

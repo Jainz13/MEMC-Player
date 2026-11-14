@@ -120,7 +120,7 @@ private fun AppRoot() {
         bottomBar = {
             if (onTab) {
                 NavigationBar(containerColor = Palette.Canvas.copy(alpha = 0.96f), tonalElevation = 0.dp) {
-                    tabs.forEach { t ->
+                    tabs.filter { !(BuildConfig.TV && it.route == Routes.EXPLORE) }.forEach { t ->
                         val selected = current?.hierarchy?.any { it.route == t.route } == true
                         NavigationBarItem(
                             selected = selected,

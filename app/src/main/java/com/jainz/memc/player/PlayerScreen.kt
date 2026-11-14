@@ -1,5 +1,17 @@
 package com.jainz.memc.player
 
+import com.jainz.memc.ui.components.tvFocusRing
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.Key
+import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.FocusRequester
+import com.jainz.memc.BuildConfig
 import android.app.Activity
 import android.content.Context
 import android.graphics.Color as AColor
@@ -232,7 +244,69 @@ fun PlayerScreen(
         activity.window.attributes = lp
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    // ---- Remote control (TV variant) ----
+    // With the controls hidden the remote drives playback directly; with them shown it moves
+    // between the buttons.
+    val rootFocus = remember { FocusRequester() }
+    val playFocus = remember { FocusRequester() }
+    val panelFocus = remember { FocusRequester() }
+    if (BuildConfig.TV) {
+        LaunchedEffect(controls, panel) {
+            delay(80) // let the controls or panel appear first
+            runCatching {
+                when {
+                    panel != null -> panelFocus.requestFocus()
+                    controls -> playFocus.requestFocus()
+                    else -> rootFocus.requestFocus()
+                }
+            }
+        }
+    }
+
+    fun togglePlay() {
+        if (state.ended) player.seekTo(0)
+        if (player.isPlaying) player.pause() else player.play()
+    }
+
+    fun remoteKey(e: KeyEvent): Boolean {
+        val down = e.type == KeyEventType.KeyDown
+        return when (e.key) {
+            Key.MediaPlayPause -> { if (down) togglePlay(); true }
+            Key.MediaPlay -> { if (down) player.play(); true }
+            Key.MediaPause -> { if (down) player.pause(); true }
+            Key.MediaFastForward -> { if (down) seekBy(seekStepMs * 3); true }
+            Key.MediaRewind -> { if (down) seekBy(-seekStepMs * 3); true }
+            Key.Back -> when {
+                panel != null -> { if (down) panel = null; true }
+                controls -> { if (down) controls = false; true }
+                else -> false
+            }
+            else -> when {
+                panel != null -> false
+                controls -> { if (down) poke(); false }
+                else -> when (e.key) {
+                    Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+                        if (down) {
+                            togglePlay()
+                            controls = true
+                        }
+                        true
+                    }
+                    Key.DirectionLeft -> { if (down) seekBy(-seekStepMs); true }
+                    Key.DirectionRight -> { if (down) seekBy(seekStepMs); true }
+                    Key.DirectionUp, Key.DirectionDown -> { if (down) controls = true; true }
+                    else -> false
+                }
+            }
+        }
+    }
+
+    Box(
+        Modifier.fillMaxSize().background(Color.Black).then(
+            if (BuildConfig.TV) Modifier.focusRequester(rootFocus).onPreviewKeyEvent { remoteKey(it) }.focusable()
+            else Modifier
+        )
+    ) {
         // SurfaceView-backed view: HDR10/HDR10+ frames go straight to the display.
         AndroidView(
             factory = { ctx ->
@@ -438,6 +512,7 @@ fun PlayerScreen(
                         if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                         if (state.isPlaying) "Pause" else "Play",
                         72,
+                        Modifier.focusRequester(playFocus),
                     ) {
                         if (state.ended) player.seekTo(0)
                         if (player.isPlaying) player.pause() else player.play()
@@ -531,7 +606,8 @@ fun PlayerScreen(
         // ---- Format badge and stats (bottom left) ----
         if (!inPip) {
             val settings = MemcApp.graph.settings
-            val statsOn by settings.showStats.flow.collectAsStateWithLifecycle()
+            val statsWanted by settings.showStats.flow.collectAsStateWithLifecycle()
+            val statsOn = statsWanted && !BuildConfig.TV
             val format = PlayerState.hdrLabel(state.videoFormat)?.let {
                 when (it) {
                     "HDR10 / HDR10+" -> "HDR"
@@ -631,7 +707,7 @@ fun PlayerScreen(
                     Spacer(Modifier.weight(1f))
                     BarIcon(Icons.Filled.Close, "Close") { panel = null }
                 }
-                LazyColumn(Modifier.weight(1f).padding(top = 8.dp)) {
+                LazyColumn(Modifier.weight(1f).padding(top = 8.dp).focusRequester(panelFocus).focusGroup()) {
                     when (openTab) {
                         PanelTab.AUDIO -> item { AudioTab(state) }
                         PanelTab.SUBTITLES -> item {
@@ -701,6 +777,7 @@ private fun RoundButton(
         modifier
             .size(sizeDp.dp)
             .background(Color(0x55000000), CircleShape)
+            .tvFocusRing(CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -874,6 +951,7 @@ private fun VideoTab(
             color = Palette.TextFaint,
         )
 
+        if (!BuildConfig.TV) {
         PanelHeading("Picture")
         var boost by remember { mutableFloatStateOf(picture.boost) }
         Text(
@@ -929,6 +1007,7 @@ private fun VideoTab(
             Switch(checked = picture.autoHdr, onCheckedChange = { onPictureChange(boost, it) })
         }
 
+        }
         PanelHeading("Speed")
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f).forEach { sp ->
@@ -940,6 +1019,7 @@ private fun VideoTab(
             }
         }
 
+        if (!BuildConfig.TV) {
         PanelHeading("Smooth motion (MEMC)")
         var on by remember { mutableStateOf(memc.enabled) }
         var fps by remember { mutableIntStateOf(memc.targetFps) }
@@ -1015,6 +1095,7 @@ private fun VideoTab(
             color = Palette.TextFaint,
         )
 
+        }
         PanelHeading("Now playing")
         playbackInfo(state).forEach { (k, value) ->
             Row(Modifier.padding(vertical = 3.dp)) {

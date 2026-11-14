@@ -1,5 +1,6 @@
 package com.jainz.memc.ui.movies
 
+import com.jainz.memc.BuildConfig
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -169,7 +170,7 @@ fun MovieDetailScreen(nav: NavController, tmdbId: Long) {
                                     leadingIcon = { Icon(Icons.Filled.Download, null, Modifier.size(18.dp)) },
                                 )
                             }
-                            AssistChip(
+                            if (!BuildConfig.TV) AssistChip(
                                 onClick = { export(primary.uri, movieName) },
                                 label = { Text("Export 60 fps") },
                                 leadingIcon = { Icon(Icons.Filled.Speed, null, Modifier.size(18.dp)) },
@@ -242,7 +243,7 @@ fun MovieDetailScreen(nav: NavController, tmdbId: Long) {
                             },
                         )
                     }
-                    if (primary != null) {
+                    if (primary != null && !BuildConfig.TV) {
                         DropdownMenuItem(
                             text = { Text("Export at 60 fps") },
                             onClick = {
