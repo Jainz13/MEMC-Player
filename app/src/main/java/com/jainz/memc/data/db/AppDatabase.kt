@@ -11,7 +11,8 @@ import androidx.room.RoomDatabase
         ShowEntity::class, SeasonEntity::class, EpisodeMetaEntity::class,
     ],
     version = 1,
-    exportSchema = true,
+    // Off: the phone and TV variants build side by side and were both writing the same schema file.
+    exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun sources(): SourceDao
