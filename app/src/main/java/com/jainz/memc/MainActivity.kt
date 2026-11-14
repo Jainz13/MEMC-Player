@@ -1,5 +1,10 @@
 package com.jainz.memc
 
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
+import android.app.Activity
+import com.jainz.memc.core.DebugRecorder
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
@@ -113,6 +118,15 @@ private fun AppRoot() {
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val current = backStack?.destination
+    // Debug recording: note each screen that opens and keep a picture of it.
+    val activity = LocalContext.current as? Activity
+    LaunchedEffect(current?.route) {
+        val route = current?.route ?: return@LaunchedEffect
+        if (!DebugRecorder.isActive) return@LaunchedEffect
+        DebugRecorder.event("screen", "Opened $route")
+        delay(900) // let it draw
+        activity?.let { DebugRecorder.captureScreen(it, route.substringBefore('?').substringBefore('/')) }
+    }
     val onTab = tabs.any { t -> current?.hierarchy?.any { it.route == t.route } == true }
 
     Scaffold(

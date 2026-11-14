@@ -73,6 +73,17 @@
             </intent-filter>
         </activity>
 
+        <!-- Lets the share sheet read a debug recording the user chose to share. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/share_paths" />
+        </provider>
+
         <!-- 60 fps export runs here so it keeps going with the screen off. -->
         <service
             android:name=".export.ExportService"

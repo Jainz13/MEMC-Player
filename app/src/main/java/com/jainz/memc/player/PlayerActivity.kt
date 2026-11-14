@@ -1,5 +1,8 @@
 package com.jainz.memc.player
 
+import com.jainz.memc.memc.PerfStats
+import java.lang.ref.WeakReference
+import com.jainz.memc.core.DebugRecorder
 import com.jainz.memc.BuildConfig
 import android.app.PictureInPictureParams
 import android.content.Intent
@@ -104,6 +107,7 @@ class PlayerActivity : ComponentActivity() {
         // the panel's resolution anyway, and it cuts the GPU work by more than half.
         memc.maxLongSide = screenLongSide()
         watchHeat()
+        startDebugRecording()
         startNpuIfWanted()
         // Only build the effect pipeline when something needs it, so plain playback keeps the
         // direct HDR10+ path to the display.
@@ -114,6 +118,7 @@ class PlayerActivity : ComponentActivity() {
             // means the phone isn't keeping up: ask the engine to ease its workload.
             override fun onDroppedVideoFrames(eventTime: AnalyticsListener.EventTime, droppedFrames: Int, elapsedMs: Long) {
                 com.jainz.memc.memc.PerfStats.dropped.addAndGet(droppedFrames.toLong())
+                DebugRecorder.event("player", "Dropped $droppedFrames frames in $elapsedMs ms")
                 if (memcInstalled && droppedFrames * 1000L / elapsedMs.coerceAtLeast(1) >= 4) {
                     // First let the engine catch its breath and refill its buffer; only if it
                     // stutters again soon after is the workload eased.
@@ -214,6 +219,7 @@ class PlayerActivity : ComponentActivity() {
                     onExport = { exportCurrent() },
                     onPlayerView = { view ->
                         playerView = view
+                        DebugRecorder.videoSurface = WeakReference(view.videoSurfaceView as? SurfaceView)
                         applyDisplayRate()
                     },
                 )
@@ -354,6 +360,52 @@ class PlayerActivity : ComponentActivity() {
 
     private fun currentId(): Long? = playlistIds.getOrNull(player.currentMediaItemIndex)
 
+    // ---- Debug recording ---------------------------------------------------------------------------
+
+    /** Everything worth knowing about the player right now, as one line. */
+    private fun debugState(): String {
+        val f = state.videoFormat
+        val c = f?.colorInfo
+        return buildString {
+            append("pos=${player.currentPosition / 1000}s playing=${player.isPlaying} state=${player.playbackState} speed=${player.playbackParameters.speed}")
+            if (f != null) {
+                append(" | video ${f.sampleMimeType} ${f.codecs ?: ""} ${f.width}x${f.height} ${f.frameRate}fps")
+                append(" colour(space=${c?.colorSpace} range=${c?.colorRange} transfer=${c?.colorTransfer} bits=${c?.lumaBitdepth})")
+            }
+            append(" decoder=${state.videoDecoder}")
+            append(" | memc installed=$memcInstalled enabled=${memc.enabled} active=${memc.active} target=${memc.targetFps} quality=${memc.quality}")
+            append(" ease=${memc.easeLevel} heat=${memc.thermalLevel} source=${memc.sourceFps}fps work=${memc.procWidth}x${memc.procHeight}")
+            append(" buffer=${memc.bufferedFrames}/${memc.bufferFrames} npu=\"${memc.npuStatus}\"")
+            append(" | picture boost=${picture.boost} autoHdr=${picture.autoHdr} convertSdr=${picture.convertSdr} fakedHdr=${picture.fakedHdr}")
+            append(" pipelineHdr=${picture.pipelineHdr} shaderMode=${picture.lastMode}")
+            append(" | window brightness=${window.attributes.screenBrightness} colorMode=${window.colorMode}")
+            append(" | totals framesOut=${PerfStats.framesOut.get()} dropped=${PerfStats.dropped.get()}")
+            append(" gpuMs=${PerfStats.gpuNs.get() / 1_000_000} npuMs=${PerfStats.npuNs.get() / 1_000_000} npuRuns=${PerfStats.npuRuns.get()}")
+        }
+    }
+
+    /** While debug recording is on: a state line every 2 seconds and a video frame every 15. */
+    private fun startDebugRecording() {
+        lifecycleScope.launch {
+            var tick = 0
+            var lastError: String? = null
+            while (isActive) {
+                delay(2000)
+                if (!DebugRecorder.isActive) continue
+                runCatching {
+                    DebugRecorder.event("player", debugState())
+                    if (state.error != lastError) {
+                        lastError = state.error
+                        lastError?.let { DebugRecorder.event("player", "ERROR shown to user: $it") }
+                    }
+                    tick++
+                    // The first frame soon after start, then one every 15 seconds while playing.
+                    if (player.isPlaying && (tick == 2 || tick % 8 == 0)) DebugRecorder.captureVideo("auto")
+                }
+            }
+        }
+    }
+
     private fun startSaver() {
         saver?.cancel()
         saver = lifecycleScope.launch {
@@ -464,6 +516,7 @@ class PlayerActivity : ComponentActivity() {
         val now = SystemClock.elapsedRealtime()
         if (now - lastPrebufferAt < minGapMs) return false
         lastPrebufferAt = now
+        DebugRecorder.event("player", "Holding playback to fill the buffer (${memc.bufferedFrames}/${memc.bufferFrames})")
         state.prebuffering = true
         player.pause()
         prebufferJob = lifecycleScope.launch {
@@ -498,6 +551,7 @@ class PlayerActivity : ComponentActivity() {
         val listener = PowerManager.OnThermalStatusChangedListener { status ->
             val before = memc.thermalLevel
             memc.thermalLevel = status
+            DebugRecorder.event("player", "Heat level $before -> $status")
             val message = when {
                 status >= 4 && before < 4 -> "Phone is very hot: 60 fps paused until it cools"
                 status == 3 && before < 3 -> "Phone is hot: 60 fps switched to its lightest mode"

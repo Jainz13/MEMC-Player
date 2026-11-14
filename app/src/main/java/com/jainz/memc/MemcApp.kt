@@ -7,6 +7,7 @@ import coil3.PlatformContext
 import coil3.SingletonImageLoader
 import coil3.request.crossfade
 import com.jainz.memc.core.CrashLog
+import com.jainz.memc.core.DebugRecorder
 import com.jainz.memc.core.Settings
 import com.jainz.memc.data.db.AppDatabase
 import com.jainz.memc.data.scan.ScanWorker
@@ -37,6 +38,7 @@ class MemcApp : Application(), SingletonImageLoader.Factory {
         instance = this
         graph = AppGraph(this)
         CrashLog.collect(this)
+        DebugRecorder.resume(this)
         if (graph.settings.scanOnStart.value) {
             ScanWorker.enqueue(this, onlyIfStale = true)
         }

@@ -1,5 +1,8 @@
 package com.jainz.memc.player
 
+import android.widget.Toast
+import androidx.compose.material.icons.filled.PhotoCamera
+import com.jainz.memc.core.DebugRecorder
 import com.jainz.memc.ui.components.tvFocusRing
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -243,6 +246,8 @@ fun PlayerScreen(
         lp.screenBrightness = b
         activity.window.attributes = lp
     }
+
+    val debugOn by DebugRecorder.active.collectAsStateWithLifecycle()
 
     // ---- Remote control (TV variant) ----
     // With the controls hidden the remote drives playback directly; with them shown it moves
@@ -493,6 +498,18 @@ fun PlayerScreen(
                         Text(state.title, style = MaterialTheme.typography.titleMedium, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         state.subtitle?.let {
                             Text(it, style = MaterialTheme.typography.bodySmall, color = Color(0xCCFFFFFF), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    if (debugOn) {
+                        BarIcon(Icons.Filled.PhotoCamera, "Save this picture to the debug recording") {
+                            DebugRecorder.event("user", "Manual capture at ${player.currentPosition / 1000}s")
+                            DebugRecorder.captureVideo("manual") { ok ->
+                                Toast.makeText(
+                                    activity,
+                                    if (ok) "Picture saved to the debug recording" else "Couldn't save a picture (limit reached or no video yet)",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
                         }
                     }
                     BarIcon(Icons.Filled.ClosedCaption, "Subtitles") { panel = PanelTab.SUBTITLES }

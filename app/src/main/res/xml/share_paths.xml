@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Files the app may hand to other apps through the share sheet: only debug recordings. -->
+<paths>
+    <cache-path name="debug" path="debug/" />
+</paths>

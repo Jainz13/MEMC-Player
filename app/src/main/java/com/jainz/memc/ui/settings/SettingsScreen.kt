@@ -1,5 +1,8 @@
 package com.jainz.memc.ui.settings
 
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import com.jainz.memc.core.DebugRecorder
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -70,6 +73,9 @@ fun SettingsScreen(nav: NavController) {
     val st = g.settings
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val debugOn by DebugRecorder.active.collectAsStateWithLifecycle()
+    var debugSummary by remember { mutableStateOf(DebugRecorder.summary(context)) }
+    var zipping by remember { mutableStateOf(false) }
 
     val savedKey by st.tmdbKey.flow.collectAsStateWithLifecycle()
     var key by remember { mutableStateOf(savedKey) }
@@ -392,6 +398,54 @@ fun SettingsScreen(nav: NavController) {
                     onValueChange = { st.subtitleScale.set((it / 10).toInt() * 10) },
                     valueRange = 60f..200f,
                 )
+            }
+        }
+
+        // ---- Diagnostics ----
+        item { SectionTitle("Diagnostics", Modifier.padding(top = 12.dp)) }
+        item {
+            Card {
+                ToggleRow(
+                    "Debug recording",
+                    "Keeps the app's log, a running record of what the player and 60 fps engine do, and pictures of " +
+                        "the video and screens. Switch it on, repeat the problem, then share the zip.",
+                    debugOn,
+                ) { on ->
+                    if (on) DebugRecorder.start(context) else DebugRecorder.stop(context)
+                    debugSummary = DebugRecorder.summary(context)
+                }
+                Text(
+                    (if (debugOn) "Recording. In the player, the camera button saves the exact picture on screen. " else "") + debugSummary,
+                    style = MaterialTheme.typography.bodySmall, color = Palette.TextFaint,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                    OutlinedButton(enabled = !zipping && debugSummary != "Nothing recorded", onClick = {
+                        zipping = true
+                        scope.launch {
+                            val result = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val zip = DebugRecorder.buildZip(context)
+                                    zip to DebugRecorder.saveToDownloads(context, zip)
+                                }
+                            }
+                            zipping = false
+                            result.onSuccess { (zip, saved) ->
+                                Toast.makeText(
+                                    context,
+                                    if (saved != null) "Saved to Download/$saved" else "Zip created",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                                runCatching { DebugRecorder.share(context, zip) }
+                            }.onFailure {
+                                Toast.makeText(context, "Couldn't create the zip: ${it.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }) { Text(if (zipping) "Creating…" else "Create zip and share") }
+                    TextButton(enabled = !zipping, onClick = {
+                        DebugRecorder.discard(context)
+                        debugSummary = DebugRecorder.summary(context)
+                    }) { Text("Discard") }
+                }
             }
         }
 
