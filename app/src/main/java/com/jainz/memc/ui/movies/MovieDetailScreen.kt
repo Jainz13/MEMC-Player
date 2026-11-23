@@ -1,5 +1,9 @@
 package com.jainz.memc.ui.movies
 
+import com.jainz.memc.ui.components.tvFocusRing
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material.icons.filled.Delete
 import com.jainz.memc.ui.components.DeleteVideosDialog
 import com.jainz.memc.BuildConfig
 import androidx.compose.foundation.background
@@ -100,7 +104,8 @@ fun MovieDetailScreen(nav: NavController, tmdbId: Long) {
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize()) {
             item {
-                BackdropHeader(Tmdb.backdrop(m?.backdropPath), m?.title ?: "", height = 440.dp) {
+                // Shorter than before so Play shows without scrolling (phone 340 dp, TV 300 dp).
+                BackdropHeader(Tmdb.backdrop(m?.backdropPath), m?.title ?: "", height = if (BuildConfig.TV) 300.dp else 340.dp) {
                     Row(
                         Modifier.align(Alignment.BottomStart).padding(horizontal = 20.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.Bottom,
@@ -162,27 +167,26 @@ fun MovieDetailScreen(nav: NavController, tmdbId: Long) {
                             )
                         }
                         val movieName = listOfNotNull(m?.title ?: primary.parsedTitle, m?.year?.let { "($it)" }).joinToString(" ")
+                        // Secondary actions as equal tiles, all visible at once.
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.padding(top = 10.dp).horizontalScroll(rememberScrollState()),
+                            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                         ) {
-                            AssistChip(
-                                onClick = { scope.launch { g.db.videos().setWatched(primary.id, !primary.watched) } },
-                                label = { Text(if (primary.watched) "Watched" else "Mark watched") },
-                                leadingIcon = { Icon(Icons.Filled.Visibility, null, Modifier.size(18.dp)) },
-                            )
+                            ActionTile(
+                                Icons.Filled.Visibility,
+                                if (primary.watched) "Watched" else "Mark watched",
+                                Modifier.weight(1f),
+                                tint = if (primary.watched) Palette.Accent else Palette.Text,
+                            ) { scope.launch { g.db.videos().setWatched(primary.id, !primary.watched) } }
                             if (primary.uri.startsWith("smb://")) {
-                                AssistChip(
-                                    onClick = { download(primary, movieName) },
-                                    label = { Text("Download · ${Format.size(primary.size)}") },
-                                    leadingIcon = { Icon(Icons.Filled.Download, null, Modifier.size(18.dp)) },
-                                )
+                                ActionTile(Icons.Filled.Download, "Download ${Format.size(primary.size)}", Modifier.weight(1f)) {
+                                    download(primary, movieName)
+                                }
                             }
-                            if (!BuildConfig.TV) AssistChip(
-                                onClick = { export(primary.uri, movieName) },
-                                label = { Text("Export 60 fps") },
-                                leadingIcon = { Icon(Icons.Filled.Speed, null, Modifier.size(18.dp)) },
-                            )
+                            if (!BuildConfig.TV) {
+                                ActionTile(Icons.Filled.Speed, "Export 60 fps", Modifier.weight(1f)) { export(primary.uri, movieName) }
+                            }
+                            ActionTile(Icons.Filled.Delete, "Delete", Modifier.weight(1f), tint = Palette.Danger) { deleting = true }
                         }
                     }
                 }
@@ -302,12 +306,41 @@ fun MovieDetailScreen(nav: NavController, tmdbId: Long) {
     }
 }
 
+/** Back / menu buttons over the backdrop. Kept under this name for the screens that use it. */
 @Composable
-fun RoundIconButton(onClick: () -> Unit, content: @Composable () -> Unit) {
-    IconButton(
-        onClick = onClick,
-        modifier = Modifier.padding(4.dp).size(40.dp).background(Color(0x55000000), CircleShape),
-    ) { content() }
+fun RoundIconButton(onClick: () -> Unit, content: @Composable () -> Unit) =
+    com.jainz.memc.ui.components.OverlayIconButton(onClick, content)
+
+/** One of the secondary actions under the Play button: icon over a short label. */
+@Composable
+private fun ActionTile(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    modifier: Modifier = Modifier,
+    tint: Color = Palette.Text,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier
+            .heightIn(min = 64.dp)
+            .tvFocusRing(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(12.dp))
+            .background(Palette.Surface)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(icon, null, tint = tint, modifier = Modifier.size(20.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (tint == Palette.Text) Palette.TextDim else tint,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+    }
 }
 
 @Composable

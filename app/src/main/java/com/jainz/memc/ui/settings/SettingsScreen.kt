@@ -1,5 +1,13 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.jainz.memc.ui.settings
 
+import androidx.compose.ui.draw.clip
+import com.jainz.memc.ui.components.tvFocusRing
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.selection.toggleable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import com.jainz.memc.core.DebugRecorder
@@ -329,7 +337,7 @@ fun SettingsScreen(nav: NavController) {
                     }
                 }
                 Text("Quality", style = MaterialTheme.typography.bodyMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(0 to "Battery saver", 1 to "Balanced", 2 to "Best", 3 to "AI").forEach { (v, label) ->
                         FilterChip(selected = memcQuality == v, onClick = { st.memcQuality.set(v) }, label = { Text(label) })
                     }
@@ -506,12 +514,22 @@ private fun Card(content: @Composable () -> Unit) {
 
 @Composable
 private fun ToggleRow(title: String, subtitle: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
+    // The whole row is the switch: easier to hit by touch, and one focus stop on TV.
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .tvFocusRing(RoundedCornerShape(10.dp), lift = 1.01f)
+            .clip(RoundedCornerShape(10.dp))
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onChange)
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
             Text(title, style = MaterialTheme.typography.bodyMedium)
             if (subtitle != null) Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Palette.TextDim)
         }
-        Switch(checked, onChange)
+        Switch(checked, onCheckedChange = null)
     }
 }
 

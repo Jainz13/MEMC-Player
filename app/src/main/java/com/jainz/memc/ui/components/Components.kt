@@ -1,5 +1,13 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.jainz.memc.ui.components
 
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.zIndex
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -88,17 +96,38 @@ fun Artwork(
     }
 }
 
-/** 2:3 poster card with optional progress bar and watched tick. */
 /**
- * On the TV variant, draws a clear ring around whatever the remote has selected. Put it before
- * `clickable` in the modifier chain. Does nothing on the phone.
+ * On the TV variant, makes whatever the remote has selected unmistakable from the sofa: an amber
+ * ring and a slight lift above its neighbours. Put it before `clickable` in the modifier chain.
+ * Wide rows pass a smaller [lift] so they don't grow past the screen edge. Does nothing on the phone.
  */
-fun Modifier.tvFocusRing(shape: Shape = CardShape): Modifier =
+fun Modifier.tvFocusRing(shape: Shape = CardShape, lift: Float = 1.045f): Modifier =
     if (!BuildConfig.TV) this else composed {
         var focused by remember { mutableStateOf(false) }
+        val scale by animateFloatAsState(if (focused) lift else 1f, tween(160), label = "focus")
         onFocusChanged { focused = it.hasFocus }
+            .zIndex(if (focused) 1f else 0f)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .then(if (focused) Modifier.border(3.dp, Palette.Accent, shape) else Modifier)
     }
+
+/** Round button for use over artwork: 48 dp to touch, dark fill so it reads on bright images. */
+@Composable
+fun OverlayIconButton(onClick: () -> Unit, content: @Composable () -> Unit) {
+    Box(
+        Modifier
+            .size(48.dp)
+            .padding(2.dp)
+            .tvFocusRing(CircleShape)
+            .clip(CircleShape)
+            .background(Color(0x990B0D10))
+            .border(1.dp, Color(0x1FFFFFFF), CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { content() }
+}
+
+/** 2:3 poster card with optional progress bar and watched tick. */
 
 @Composable
 fun PosterCard(
@@ -161,7 +190,7 @@ fun LandscapeCard(
     overline: String? = null,
     onClick: () -> Unit,
 ) {
-    Column(modifier.width(width).clip(CardShape).clickable(onClick = onClick)) {
+    Column(modifier.width(width).tvFocusRing().clip(CardShape).clickable(onClick = onClick)) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -247,7 +276,7 @@ fun Shelf(
         Row(
             Modifier
                 .fillMaxWidth()
-                .then(if (onSeeAll != null) Modifier.clickable(onClick = onSeeAll) else Modifier)
+                .then(if (onSeeAll != null) Modifier.tvFocusRing(RoundedCornerShape(8.dp), 1f).clickable(onClick = onSeeAll) else Modifier)
                 .padding(horizontal = 20.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -256,9 +285,10 @@ fun Shelf(
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = Palette.TextDim)
             }
         }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(if (BuildConfig.TV) 4.dp else 10.dp))
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 20.dp),
+            // On TV the selected card grows a little: leave room so its ring isn't cut off.
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = if (BuildConfig.TV) 8.dp else 0.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             content = content,
         )
@@ -270,15 +300,23 @@ fun Shelf(
 fun TechBadges(tech: String, modifier: Modifier = Modifier) {
     val tags = tech.split('|').filter { it.isNotBlank() }
     if (tags.isEmpty()) return
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    // Wraps onto a second line instead of running off a narrow screen.
+    FlowRow(
+        modifier,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
         tags.forEach { tag ->
+            // Amber only for the picture formats; everything else stays quiet.
             val hdr = tag.startsWith("HDR") || tag == "DV" || tag == "HLG"
+            val shape = RoundedCornerShape(5.dp)
             Text(
-                tag,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (hdr) Palette.Accent else Palette.Text,
+                if (tag == "DV") "DOLBY VISION" else tag,
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold),
+                color = if (hdr) Palette.Accent else Color(0xFFD8DCE3),
                 modifier = Modifier
-                    .border(1.dp, if (hdr) Palette.Accent.copy(alpha = 0.7f) else Palette.TextDim.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+                    .background(if (hdr) Color(0x1AFFB547) else Palette.SurfaceHigh, shape)
+                    .border(if (hdr) 1.dp else 0.75.dp, if (hdr) Color(0x66FFB547) else Color(0x24FFFFFF), shape)
                     .padding(horizontal = 6.dp, vertical = 2.dp),
             )
         }
@@ -308,6 +346,20 @@ fun BackdropHeader(
                     )
                 )
         )
+        if (BuildConfig.TV) {
+            // On a wide screen the text sits on the left: darken that side so it stays readable.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.horizontalGradient(
+                            0f to Color(0xEB0B0D10),
+                            0.55f to Color(0x880B0D10),
+                            1f to Color.Transparent,
+                        )
+                    )
+            )
+        }
         content()
     }
 }

@@ -1,5 +1,8 @@
 package com.jainz.memc.ui.library
 
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.border
+import com.jainz.memc.ui.components.tvFocusRing
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.AlertDialog
 import android.widget.Toast
@@ -212,21 +215,51 @@ private fun SourceRow(
     onRemove: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
+    val failed = s.lastError != null
+    val shape = RoundedCornerShape(12.dp)
+    // Each share is a card; one that can't be reached is outlined red with Retry right there.
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(start = 20.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 5.dp)
+            .tvFocusRing(shape, lift = 1.01f)
+            .clip(shape)
+            .background(if (failed) Color(0xFF1A1518) else Palette.Surface)
+            .then(if (failed) Modifier.border(1.dp, Color(0x59FF6B6B), shape) else Modifier)
+            .clickable(onClick = onOpen)
+            .padding(start = 14.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconTile(Icons.Filled.Dns)
         Column(Modifier.weight(1f).padding(start = 14.dp)) {
-            Text(s.name, style = MaterialTheme.typography.titleMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(s.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f, fill = false))
+                Text(
+                    when {
+                        failed -> "  Unreachable"
+                        !s.indexed -> "  Browse only"
+                        else -> "  Connected"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = when {
+                        failed -> Palette.Danger
+                        !s.indexed -> Palette.TextFaint
+                        else -> Color(0xFF89D9A4)
+                    },
+                )
+            }
             Text(
                 "\\\\${s.host}\\${s.share}" + if (s.path.isNotBlank()) "\\${s.path.replace('/', '\\')}" else "",
                 style = MaterialTheme.typography.bodySmall,
                 color = Palette.TextDim,
             )
-            when {
-                s.lastError != null -> Text(s.lastError, style = MaterialTheme.typography.bodySmall, color = Palette.Danger)
-                !s.indexed -> Text("Browse only", style = MaterialTheme.typography.bodySmall, color = Palette.TextFaint)
+            if (failed) {
+                Text(s.lastError ?: "", style = MaterialTheme.typography.bodySmall, color = Palette.Text, modifier = Modifier.padding(top = 4.dp))
+                Button(
+                    onClick = { if (s.indexed) onRescan() else onOpen() },
+                    modifier = Modifier.padding(top = 8.dp).height(36.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                ) { Text("Retry") }
             }
         }
         Box {
@@ -255,7 +288,11 @@ private fun NavRow(
     onClick: () -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 10.dp),
+        Modifier
+            .fillMaxWidth()
+            .tvFocusRing(RoundedCornerShape(10.dp), lift = 1.01f)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconTile(icon)

@@ -1,5 +1,7 @@
 package com.jainz.memc.ui.home
 
+import com.jainz.memc.BuildConfig
+import com.jainz.memc.ui.components.OverlayIconButton
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -277,7 +279,8 @@ private fun Hero(featured: List<Featured>, nav: NavController) {
     Box {
         HorizontalPager(pager) { page ->
             val f = featured[page]
-            BackdropHeader(Tmdb.backdrop(f.backdrop), f.title, height = 520.dp) {
+            // Phone: 400 dp so Continue Watching peeks in below. TV: 330 dp of the 540 dp screen.
+            BackdropHeader(Tmdb.backdrop(f.backdrop), f.title, height = if (BuildConfig.TV) 330.dp else 400.dp) {
                 Column(
                     Modifier
                         .align(Alignment.BottomStart)
@@ -354,12 +357,16 @@ private fun PlainHeader(nav: NavController) {
 @Composable
 private fun TopActions(nav: NavController, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    Row(modifier.statusBarsPadding().padding(end = 8.dp, top = 4.dp)) {
-        IconButton(onClick = { ScanWorker.enqueue(context) }) {
-            Icon(Icons.Filled.Refresh, "Rescan library", tint = Color.White)
+    // Dark round buttons so they stay readable over bright artwork.
+    Row(
+        modifier.statusBarsPadding().padding(end = 8.dp, top = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        OverlayIconButton(onClick = { ScanWorker.enqueue(context) }) {
+            Icon(Icons.Filled.Refresh, "Rescan library", tint = Color.White, modifier = Modifier.size(20.dp))
         }
-        IconButton(onClick = { nav.navigate(Routes.SETTINGS) }) {
-            Icon(Icons.Filled.Settings, "Settings", tint = Color.White)
+        OverlayIconButton(onClick = { nav.navigate(Routes.SETTINGS) }) {
+            Icon(Icons.Filled.Settings, "Settings", tint = Color.White, modifier = Modifier.size(20.dp))
         }
     }
 }

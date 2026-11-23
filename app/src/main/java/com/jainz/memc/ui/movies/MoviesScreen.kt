@@ -1,5 +1,6 @@
 package com.jainz.memc.ui.movies
 
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,11 +50,10 @@ fun MoviesScreen(nav: NavController) {
     val g = MemcApp.graph
     val movies by remember { g.db.meta().movies() }.collectAsStateWithLifecycle(emptyList())
     var sort by rememberSaveable { mutableStateOf(SortBy.ADDED) }
-    var unwatchedOnly by rememberSaveable { mutableStateOf(false) }
-    var menu by remember { mutableStateOf(false) }
+    var filters by rememberSaveable { mutableStateOf(setOf<LibraryFilter>()) }
 
-    val shown = remember(movies, sort, unwatchedOnly) {
-        movies.filter { !unwatchedOnly || !it.watched }.let { list ->
+    val shown = remember(movies, sort, filters) {
+        movies.filter { m -> filters.all { it.matches(m.tech, !m.watched) } }.let { list ->
             when (sort) {
                 SortBy.ADDED -> list.sortedByDescending { it.addedAt }
                 SortBy.TITLE -> list.sortedBy { it.movie.title.lowercase().removePrefix("the ") }
@@ -72,29 +72,17 @@ fun MoviesScreen(nav: NavController) {
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) {
             Column(Modifier.statusBarsPadding()) {
-                Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Movies", style = MaterialTheme.typography.headlineLarge)
-                        Text("${shown.size} movies · ${sort.label}", style = MaterialTheme.typography.bodySmall, color = Palette.TextDim)
-                    }
-                    Box {
-                        IconButton(onClick = { menu = true }) { Icon(Icons.AutoMirrored.Filled.Sort, "Sort") }
-                        DropdownMenu(menu, onDismissRequest = { menu = false }) {
-                            SortBy.entries.forEach { s ->
-                                DropdownMenuItem(
-                                    text = { Text(s.label) },
-                                    onClick = { sort = s; menu = false },
-                                    trailingIcon = { if (s == sort) Icon(Icons.Filled.Check, null) },
-                                )
-                            }
-                        }
-                    }
+                Column(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+                    Text("Movies", style = MaterialTheme.typography.headlineLarge)
+                    Text(
+                        if (filters.isEmpty()) "${shown.size} movies" else "${shown.size} of ${movies.size} movies",
+                        style = MaterialTheme.typography.bodySmall, color = Palette.TextDim,
+                    )
                 }
-                FilterChip(
-                    selected = unwatchedOnly,
-                    onClick = { unwatchedOnly = !unwatchedOnly },
-                    label = { Text("Unwatched") },
-                    modifier = Modifier.padding(top = 4.dp),
+                FilterBar(
+                    sort, { sort = it }, filters,
+                    { f -> filters = if (f in filters) filters - f else filters + f },
+                    Modifier.padding(top = 8.dp),
                 )
                 ScanStatus()
             }
@@ -105,6 +93,12 @@ fun MoviesScreen(nav: NavController) {
                     "No movies yet",
                     "Movies appear here once your library is scanned and matched. Add a TMDB key in Settings to identify them.",
                 )
+            }
+        } else if (shown.isEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                EmptyMessage("No matching movies", "None of your movies match these filters.") {
+                    OutlinedButton(onClick = { filters = emptySet() }) { Text("Reset filters") }
+                }
             }
         }
         items(shown, key = { it.movie.tmdbId }) { m ->

@@ -1,5 +1,7 @@
 package com.jainz.memc.player
 
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.filled.PhotoSizeSelectActual
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.FitScreen
@@ -542,13 +544,15 @@ fun PlayerScreen(
                     // Original (the video's own pixels, no scaling) -> Fit.
                     val isOriginal = originalSize
                     val isCrop = !isOriginal && resizeMode == AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                    BarIcon(
+                    // Labelled, so the current size is always visible (not only in a brief flash).
+                    BarPill(
                         when {
                             isCrop -> Icons.Filled.Crop
                             isOriginal -> Icons.Filled.PhotoSizeSelectActual
                             else -> Icons.Filled.FitScreen
                         },
-                        "Picture size: " + when { isCrop -> "crop"; isOriginal -> "original"; else -> "fit" } + ". Tap to change",
+                        when { isCrop -> "Crop"; isOriginal -> "Original"; else -> "Fit" },
+                        "Picture size. Tap to change",
                     ) {
                         when {
                             isCrop -> {
@@ -592,8 +596,9 @@ fun PlayerScreen(
                     RoundButton(
                         if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                         if (state.isPlaying) "Pause" else "Play",
-                        72,
+                        if (BuildConfig.TV) 80 else 72,
                         Modifier.focusRequester(playFocus),
+                        primary = true,
                     ) {
                         if (state.ended) player.seekTo(0)
                         if (player.isPlaying) player.pause() else player.play()
@@ -701,7 +706,7 @@ fun PlayerScreen(
             LaunchedEffect(format, player.currentMediaItemIndex) {
                 if (format != null) {
                     announce = true
-                    delay(6000)
+                    delay(3500)
                     announce = false
                 }
             }
@@ -716,15 +721,22 @@ fun PlayerScreen(
                     }
                 }
             }
+            // The format badge has its own corner (top right, below the top bar) so it never
+            // collides with subtitles, the seek bar or the stats line.
+            AnimatedVisibility(
+                visible = format != null && announce,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.align(Alignment.TopEnd).displayCutoutPadding().padding(top = 64.dp, end = 24.dp),
+            ) {
+                FormatBadge(format ?: "")
+            }
             val lift = (if (controls) 104.dp else 10.dp) + (if (resumedAt != null) 52.dp else 0.dp)
             Row(
                 Modifier.align(Alignment.BottomStart).padding(start = 20.dp, bottom = lift),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                AnimatedVisibility(visible = format != null && (announce || statsOn), enter = fadeIn(), exit = fadeOut()) {
-                    FormatBadge(format ?: "")
-                }
                 if (statsOn) {
                     val s = sample
                     Text(
@@ -765,7 +777,9 @@ fun PlayerScreen(
                 Modifier
                     .align(Alignment.CenterEnd)
                     .fillMaxHeight()
-                    .width(400.dp)
+                    // About a third of the screen, so most of the picture stays visible.
+                    .fillMaxWidth(0.4f)
+                    .widthIn(min = 320.dp, max = 420.dp)
                     .background(Color(0xF2121418), RoundedCornerShape(topStart = 20.dp, bottomStart = 20.dp))
                     .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
                     .displayCutoutPadding()
@@ -843,7 +857,27 @@ fun PlayerScreen(
 
 @Composable
 private fun BarIcon(icon: ImageVector, description: String, onClick: () -> Unit) {
-    IconButton(onClick = onClick) { Icon(icon, description, tint = Color.White) }
+    IconButton(onClick = onClick, modifier = Modifier.tvFocusRing(CircleShape)) { Icon(icon, description, tint = Color.White) }
+}
+
+/** Top-bar button with a word next to the icon, for settings whose current value matters. */
+@Composable
+private fun BarPill(icon: ImageVector, label: String, description: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .padding(horizontal = 4.dp)
+            .height(36.dp)
+            .tvFocusRing(RoundedCornerShape(18.dp))
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0xCC15181D))
+            .border(1.dp, Color(0x1FFFFFFF), RoundedCornerShape(18.dp))
+            .clickable(onClickLabel = description, onClick = onClick)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = Color.White, modifier = Modifier.size(16.dp))
+        Text(label, color = Color.White, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(start = 6.dp))
+    }
 }
 
 @Composable
@@ -852,17 +886,19 @@ private fun RoundButton(
     description: String,
     sizeDp: Int,
     modifier: Modifier = Modifier,
+    primary: Boolean = false,
     onClick: () -> Unit,
 ) {
+    // The main play/pause button is amber so the eye finds it first.
     Box(
         modifier
             .size(sizeDp.dp)
-            .background(Color(0x55000000), CircleShape)
+            .background(if (primary) Palette.Accent else Color(0x55000000), CircleShape)
             .tvFocusRing(CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, description, tint = Color.White, modifier = Modifier.size((sizeDp * 0.55f).dp))
+        Icon(icon, description, tint = if (primary) Palette.Canvas else Color.White, modifier = Modifier.size((sizeDp * 0.55f).dp))
     }
 }
 
@@ -1193,10 +1229,10 @@ private fun FormatBadge(text: String) {
     Text(
         text.uppercase(),
         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black, letterSpacing = 1.2.sp),
-        color = Color.White,
+        color = Palette.Accent,
         modifier = Modifier
-            .background(Color(0x99000000), RoundedCornerShape(6.dp))
-            .border(1.5.dp, Color.White, RoundedCornerShape(6.dp))
+            .background(Color(0xD10B0D10), RoundedCornerShape(6.dp))
+            .border(1.dp, Color(0x73FFB547), RoundedCornerShape(6.dp))
             .padding(horizontal = 10.dp, vertical = 4.dp),
     )
 }

@@ -150,6 +150,8 @@ data class ShowItem(
     val episodeCount: Int,
     val watchedCount: Int,
     val addedAt: Long,
+    /** Tech tags of all its episodes joined with '|', for the 4K / HDR / Dolby Vision filters. */
+    val tech: String,
 )
 
 /** A video plus whatever artwork and titles the library knows for it. */

@@ -1,5 +1,15 @@
 package com.jainz.memc
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import com.jainz.memc.ui.components.tvFocusRing
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.NavigationRailItemDefaults
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRail
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
@@ -88,7 +98,7 @@ private data class Tab(val route: String, val label: String, val icon: ImageVect
 private val tabs = listOf(
     Tab(Routes.HOME, "Home", Icons.Filled.Home),
     Tab(Routes.MOVIES, "Movies", Icons.Filled.Movie),
-    Tab(Routes.SHOWS, "TV Shows", Icons.Filled.Tv),
+    Tab(Routes.SHOWS, "Shows", Icons.Filled.Tv),
     Tab(Routes.LIBRARY, "Library", Icons.Filled.Folder),
     Tab(Routes.EXPLORE, "Explore", Icons.Filled.Explore),
     Tab(Routes.SEARCH, "Search", Icons.Filled.Search),
@@ -129,12 +139,20 @@ private fun AppRoot() {
     }
     val onTab = tabs.any { t -> current?.hierarchy?.any { it.route == t.route } == true }
 
+    val shownTabs = tabs.filter { !(BuildConfig.TV && it.route == Routes.EXPLORE) }
+    fun go(route: String) = nav.navigate(route) {
+        popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+        launchSingleTop = true
+        restoreState = true
+    }
+
     Scaffold(
         containerColor = Palette.Canvas,
         bottomBar = {
-            if (onTab) {
+            // TV: the tabs live in a rail on the left instead (see below).
+            if (onTab && !BuildConfig.TV) {
                 NavigationBar(containerColor = Palette.Canvas.copy(alpha = 0.96f), tonalElevation = 0.dp) {
-                    tabs.filter { !(BuildConfig.TV && it.route == Routes.EXPLORE) }.forEach { t ->
+                    shownTabs.forEach { t ->
                         val selected = current?.hierarchy?.any { it.route == t.route } == true
                         NavigationBarItem(
                             selected = selected,
@@ -161,7 +179,55 @@ private fun AppRoot() {
         },
     ) { padding ->
         // Screens draw their own top insets so artwork can run under the status bar.
-        Box(Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding())) {
+        Row(Modifier.fillMaxSize().padding(bottom = padding.calculateBottomPadding())) {
+        if (BuildConfig.TV && onTab) {
+            // A rail on the left: Left from the first card of any row reaches it, Right goes back.
+            NavigationRail(
+                containerColor = Palette.Surface,
+                modifier = Modifier.fillMaxHeight().padding(vertical = 0.dp),
+                header = {
+                    Text(
+                        "M", color = Palette.Canvas, style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                            .background(Palette.Accent, RoundedCornerShape(8.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    )
+                },
+            ) {
+                shownTabs.forEach { t ->
+                    val selected = current?.hierarchy?.any { it.route == t.route } == true
+                    NavigationRailItem(
+                        selected = selected,
+                        onClick = { go(t.route) },
+                        icon = { Icon(t.icon, t.label) },
+                        label = { Text(t.label, maxLines = 1, style = MaterialTheme.typography.labelMedium) },
+                        modifier = Modifier.tvFocusRing(RoundedCornerShape(16.dp)),
+                        colors = NavigationRailItemDefaults.colors(
+                            selectedIconColor = Palette.Accent,
+                            selectedTextColor = Palette.Accent,
+                            indicatorColor = Palette.AccentDim,
+                            unselectedIconColor = Palette.TextDim,
+                            unselectedTextColor = Palette.TextDim,
+                        ),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                NavigationRailItem(
+                    selected = current?.route == Routes.SETTINGS,
+                    onClick = { go(Routes.SETTINGS) },
+                    icon = { Icon(Icons.Filled.Settings, "Settings") },
+                    label = { Text("Settings", style = MaterialTheme.typography.labelMedium) },
+                    modifier = Modifier.tvFocusRing(RoundedCornerShape(16.dp)).padding(bottom = 16.dp),
+                    colors = NavigationRailItemDefaults.colors(
+                        selectedIconColor = Palette.Accent,
+                        indicatorColor = Palette.AccentDim,
+                        unselectedIconColor = Palette.TextDim,
+                        unselectedTextColor = Palette.TextDim,
+                    ),
+                )
+            }
+        }
+        Box(Modifier.weight(1f).fillMaxHeight()) {
             NavHost(nav, startDestination = Routes.HOME) {
                 composable(Routes.HOME) { HomeScreen(nav) }
                 composable(Routes.MOVIES) { MoviesScreen(nav) }
@@ -212,6 +278,7 @@ private fun AppRoot() {
                     SmbBrowseScreen(nav, it.arguments?.getLong("sourceId") ?: 0L, it.arguments?.getString("p") ?: "")
                 }
             }
+        }
         }
     }
 }

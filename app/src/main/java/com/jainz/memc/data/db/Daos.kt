@@ -181,7 +181,8 @@ interface MetaDao {
     fun movies(): Flow<List<MovieItem>>
 
     @Query(
-        """SELECT s.*, COUNT(v.id) AS episodeCount, SUM(v.watched) AS watchedCount, MAX(v.addedAt) AS addedAt
+        """SELECT s.*, COUNT(v.id) AS episodeCount, SUM(v.watched) AS watchedCount, MAX(v.addedAt) AS addedAt,
+        COALESCE(GROUP_CONCAT(v.tech, '|'), '') AS tech
         FROM shows s JOIN videos v ON v.showId = s.tmdbId GROUP BY s.tmdbId"""
     )
     fun shows(): Flow<List<ShowItem>>

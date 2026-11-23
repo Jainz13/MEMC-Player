@@ -1,5 +1,8 @@
 package com.jainz.memc.ui.shows
 
+import com.jainz.memc.ui.movies.LibraryFilter
+import com.jainz.memc.ui.movies.FilterBar
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -47,14 +50,15 @@ fun ShowsScreen(nav: NavController) {
     val g = MemcApp.graph
     val shows by remember { g.db.meta().shows() }.collectAsStateWithLifecycle(emptyList())
     var sort by rememberSaveable { mutableStateOf(SortBy.ADDED) }
-    var menu by remember { mutableStateOf(false) }
+    var filters by rememberSaveable { mutableStateOf(setOf<LibraryFilter>()) }
 
-    val shown = remember(shows, sort) {
+    val shown = remember(shows, sort, filters) {
+        val list = shows.filter { s -> filters.all { it.matches(s.tech, s.watchedCount < s.episodeCount) } }
         when (sort) {
-            SortBy.ADDED -> shows.sortedByDescending { it.addedAt }
-            SortBy.TITLE -> shows.sortedBy { it.show.name.lowercase().removePrefix("the ") }
-            SortBy.YEAR -> shows.sortedByDescending { it.show.year ?: 0 }
-            SortBy.RATING -> shows.sortedByDescending { it.show.rating }
+            SortBy.ADDED -> list.sortedByDescending { it.addedAt }
+            SortBy.TITLE -> list.sortedBy { it.show.name.lowercase().removePrefix("the ") }
+            SortBy.YEAR -> list.sortedByDescending { it.show.year ?: 0 }
+            SortBy.RATING -> list.sortedByDescending { it.show.rating }
         }
     }
 
@@ -67,24 +71,18 @@ fun ShowsScreen(nav: NavController) {
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) {
             Column(Modifier.statusBarsPadding()) {
-                Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("TV Shows", style = MaterialTheme.typography.headlineLarge)
-                        Text("${shown.size} shows · ${sort.label}", style = MaterialTheme.typography.bodySmall, color = Palette.TextDim)
-                    }
-                    Box {
-                        IconButton(onClick = { menu = true }) { Icon(Icons.AutoMirrored.Filled.Sort, "Sort") }
-                        DropdownMenu(menu, onDismissRequest = { menu = false }) {
-                            SortBy.entries.forEach { s ->
-                                DropdownMenuItem(
-                                    text = { Text(s.label) },
-                                    onClick = { sort = s; menu = false },
-                                    trailingIcon = { if (s == sort) Icon(Icons.Filled.Check, null) },
-                                )
-                            }
-                        }
-                    }
+                Column(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+                    Text("TV Shows", style = MaterialTheme.typography.headlineLarge)
+                    Text(
+                        if (filters.isEmpty()) "${shown.size} shows" else "${shown.size} of ${shows.size} shows",
+                        style = MaterialTheme.typography.bodySmall, color = Palette.TextDim,
+                    )
                 }
+                FilterBar(
+                    sort, { sort = it }, filters,
+                    { f -> filters = if (f in filters) filters - f else filters + f },
+                    Modifier.padding(top = 8.dp),
+                )
                 ScanStatus()
             }
         }
@@ -94,6 +92,12 @@ fun ShowsScreen(nav: NavController) {
                     "No TV shows yet",
                     "Episodes named like Show.S01E02 or kept in Show/Season 1 folders are grouped here automatically.",
                 )
+            }
+        } else if (shown.isEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                EmptyMessage("No matching shows", "None of your shows match these filters.") {
+                    OutlinedButton(onClick = { filters = emptySet() }) { Text("Reset filters") }
+                }
             }
         }
         items(shown, key = { it.show.tmdbId }) { s ->

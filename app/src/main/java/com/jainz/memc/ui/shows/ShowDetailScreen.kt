@@ -1,5 +1,6 @@
 package com.jainz.memc.ui.shows
 
+import com.jainz.memc.ui.components.tvFocusRing
 import com.jainz.memc.ui.components.DeleteVideosDialog
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
@@ -116,7 +117,7 @@ fun ShowDetailScreen(nav: NavController, tmdbId: Long) {
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize()) {
             item {
-                BackdropHeader(Tmdb.backdrop(s?.backdropPath), s?.name ?: "", height = 420.dp) {
+                BackdropHeader(Tmdb.backdrop(s?.backdropPath), s?.name ?: "", height = if (BuildConfig.TV) 300.dp else 330.dp) {
                     Row(
                         Modifier.align(Alignment.BottomStart).padding(horizontal = 20.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.Bottom,
@@ -304,6 +305,7 @@ private fun EpisodeRow(e: VideoCard) {
     Row(
         Modifier
             .fillMaxWidth()
+            .tvFocusRing(RoundedCornerShape(12.dp), lift = 1.01f)
             .combinedClickable(
                 onClick = { Play.video(context, v.id) },
                 onLongClick = { menu = true },
