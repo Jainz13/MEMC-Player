@@ -1,5 +1,6 @@
 package com.jainz.memc.ui.shows
 
+import com.jainz.memc.BuildConfig
 import com.jainz.memc.ui.components.tvFocusRing
 import com.jainz.memc.ui.components.DeleteVideosDialog
 import androidx.compose.foundation.ExperimentalFoundationApi
