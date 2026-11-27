@@ -68,7 +68,11 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8: drops unused code and optimises the rest (Compose runs much smoother and the
+            // APK is smaller). Names are kept for readable crash reports; see proguard-rules.pro.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = if (releaseStoreFile != null) {
                 signingConfigs.getByName("release")
             } else {
