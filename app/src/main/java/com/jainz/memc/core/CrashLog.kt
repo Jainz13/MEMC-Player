@@ -118,6 +118,7 @@ object CrashLog {
     }
 
     /** Everything Android recorded about a process ending, as text. */
+    @androidx.annotation.RequiresApi(30)
     fun describe(exit: ApplicationExitInfo): String = buildString {
         appendLine("MEMC Player ${BuildConfig.VERSION_NAME}")
         appendLine("${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
@@ -125,6 +126,7 @@ object CrashLog {
         append(details(exit))
     }
 
+    @androidx.annotation.RequiresApi(30)
     private fun details(bad: ApplicationExitInfo): String {
         val trace = when {
             Build.VERSION.SDK_INT < 31 -> null

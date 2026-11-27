@@ -170,8 +170,7 @@ class NpuFlow private constructor(
          * Other phones (Exynos, Tensor, MediaTek) never load it and use the GPU engine.
          */
         val isSnapdragon: Boolean by lazy {
-            val b = android.os.Build.VERSION.SDK_INT
-            val maker = if (b >= 31) android.os.Build.SOC_MANUFACTURER.lowercase() else ""
+            val maker = if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MANUFACTURER.lowercase() else ""
             when {
                 maker.contains("qti") || maker.contains("qualcomm") -> true
                 maker.isNotBlank() && maker != "unknown" -> false
