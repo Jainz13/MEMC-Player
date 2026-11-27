@@ -378,7 +378,7 @@ class PlayerActivity : ComponentActivity() {
             append(" buffer=${memc.bufferedFrames}/${memc.bufferFrames} npu=\"${memc.npuStatus}\"")
             append(" | picture boost=${picture.boost} autoHdr=${picture.autoHdr} convertSdr=${picture.convertSdr} fakedHdr=${picture.fakedHdr}")
             append(" pipelineHdr=${picture.pipelineHdr} shaderMode=${picture.lastMode}")
-            append(" | window brightness=${window.attributes.screenBrightness} colorMode=${window.colorMode}")
+            append(" | window brightness=${window.attributes.screenBrightness} colorMode=${if (Build.VERSION.SDK_INT >= 26) window.colorMode else 0}")
             val surface = playerView?.videoSurfaceView
             append(" | size reported=${player.videoSize.width}x${player.videoSize.height} view=${surface?.width}x${surface?.height} mode=${playerView?.resizeMode}")
             append(" | totals framesOut=${PerfStats.framesOut.get()} dropped=${PerfStats.dropped.get()}")
@@ -544,13 +544,12 @@ class PlayerActivity : ComponentActivity() {
         return true
     }
 
-    private var thermalListener: PowerManager.OnThermalStatusChangedListener? = null
+    private var thermalListener: Any? = null
 
     /** Follows Android's heat rating so the engine backs off before the phone protects itself. */
     private fun watchHeat() {
-        val pm = getSystemService(PowerManager::class.java) ?: return
-        memc.thermalLevel = runCatching { pm.currentThermalStatus }.getOrDefault(0)
-        val listener = PowerManager.OnThermalStatusChangedListener { status ->
+        memc.thermalLevel = com.jainz.memc.core.Compat.thermalStatus(this)
+        thermalListener = com.jainz.memc.core.Compat.watchHeat(this) { status ->
             val before = memc.thermalLevel
             memc.thermalLevel = status
             DebugRecorder.event("player", "Heat level $before -> $status")
@@ -563,13 +562,15 @@ class PlayerActivity : ComponentActivity() {
             if (message != null && memc.enabled) Toast.makeText(this, message, Toast.LENGTH_LONG).show()
             if (status < 2) startNpuIfWanted()
         }
-        thermalListener = listener
-        runCatching { pm.addThermalStatusListener(mainExecutor, listener) }
     }
 
     private fun startNpuIfWanted() {
         if (BuildConfig.TV) return
         if (memc.quality != 3 || !memc.enabled || npuLive != null || npuStarting) return
+        if (!NpuFlow.isSnapdragon) {
+            memc.npuStatus = "AI needs a Snapdragon chip's NPU - using the GPU engine (Best)"
+            return
+        }
         if (!NpuFlow.hasModel(this, NpuFlow.LIVE)) {
             memc.npuStatus = "AI model isn't in this build - using the GPU engine"
             return
@@ -771,6 +772,7 @@ class PlayerActivity : ComponentActivity() {
         if (hasFocus) hideSystemBars()
     }
 
+    @androidx.annotation.RequiresApi(26)
     private fun pipParams(): PictureInPictureParams {
         val size = player.videoSize
         val ratio = if (size.width > 0 && size.height > 0) {
@@ -789,12 +791,13 @@ class PlayerActivity : ComponentActivity() {
         return b.build()
     }
 
+    // Picture-in-picture with a set shape needs Android 8 (older TV boxes simply don't offer it).
     private fun updatePipParams() {
-        runCatching { setPictureInPictureParams(pipParams()) }
+        if (Build.VERSION.SDK_INT >= 26) runCatching { setPictureInPictureParams(pipParams()) }
     }
 
     private fun enterPip() {
-        runCatching { enterPictureInPictureMode(pipParams()) }
+        if (Build.VERSION.SDK_INT >= 26) runCatching { enterPictureInPictureMode(pipParams()) }
     }
 
     override fun onUserLeaveHint() {
@@ -819,7 +822,7 @@ class PlayerActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        thermalListener?.let { l -> runCatching { getSystemService(PowerManager::class.java)?.removeThermalStatusListener(l) } }
+        com.jainz.memc.core.Compat.unwatchHeat(this, thermalListener)
         saveProgress()
         saver?.cancel()
         state.release()

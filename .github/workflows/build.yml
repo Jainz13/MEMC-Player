@@ -90,7 +90,7 @@ jobs:
           name: MEMC Player 0.1.${{ github.run_number }}
           body: |
             Automatic build from commit ${{ github.sha }}.
-            Phone: MEMC-Player-0.1.${{ github.run_number }}.apk - tap it to download, then open it to install.
-            Google TV / Android TV: MEMC-Player-TV-0.1.${{ github.run_number }}.apk (library and player only).
+            Phones (Android 10+, 64-bit): MEMC-Player-0.1.${{ github.run_number }}.apk - tap it to download, then open it to install. AI mode runs on Snapdragon phones; every phone gets the GPU 60 fps engine.
+            Android TV / Google TV / Fire TV boxes (Android 7+): MEMC-Player-TV-0.1.${{ github.run_number }}.apk (library and player only).
           files: out/*.apk
           make_latest: true

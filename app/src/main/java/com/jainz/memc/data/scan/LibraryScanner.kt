@@ -76,22 +76,27 @@ class LibraryScanner(private val context: Context, private val g: AppGraph) {
         val seen = HashSet<String>()
 
         // ---- 1. Media index ----
-        val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        // Android 9 and older (TV boxes) have one "external" volume and no relative paths:
+        // the folder is taken from the file's full path instead.
+        val modern = Build.VERSION.SDK_INT >= 29
+        val collection = if (modern) MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         @Suppress("DEPRECATION")
-        val projection = arrayOf(
+        val projection = listOfNotNull(
             MediaStore.Video.Media._ID,
             MediaStore.Video.Media.DISPLAY_NAME,
-            MediaStore.Video.Media.RELATIVE_PATH,
+            if (modern) MediaStore.Video.Media.RELATIVE_PATH else null,
             MediaStore.Video.Media.SIZE,
             MediaStore.Video.Media.DATE_MODIFIED,
             MediaStore.Video.Media.DURATION,
             MediaStore.Video.Media.DATA,
-        )
+        ).toTypedArray()
+        val storageRoot = Environment.getExternalStorageDirectory().absolutePath.trimEnd('/') + "/"
         var indexed = 0
         context.contentResolver.query(collection, projection, null, null, null)?.use { c ->
             val iId = c.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
             val iName = c.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
-            val iRel = c.getColumnIndexOrThrow(MediaStore.Video.Media.RELATIVE_PATH)
+            val iRel = if (modern) c.getColumnIndexOrThrow(MediaStore.Video.Media.RELATIVE_PATH) else -1
             val iSize = c.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
             val iMod = c.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_MODIFIED)
             val iDur = c.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
@@ -105,7 +110,7 @@ class LibraryScanner(private val context: Context, private val g: AppGraph) {
                 else ContentUris.withAppendedId(collection, c.getLong(iId)).toString()
                 found += FoundFile(
                     uri = uri,
-                    folder = c.getString(iRel) ?: "",
+                    folder = if (iRel >= 0) c.getString(iRel) ?: "" else legacyFolder(path, storageRoot),
                     fileName = name,
                     size = c.getLong(iSize),
                     modified = c.getLong(iMod) * 1000,
@@ -154,6 +159,17 @@ class LibraryScanner(private val context: Context, private val g: AppGraph) {
             extra > 0 -> "${found.size} videos found ($extra outside the media index)"
             else -> "${found.size} videos found"
         }
+    }
+
+    /** "Movies/Films/" from "/storage/emulated/0/Movies/Films/x.mkv" (same form as RELATIVE_PATH). */
+    private fun legacyFolder(path: String?, root: String): String {
+        val dir = path?.substringBeforeLast('/', "") ?: return ""
+        val rel = when {
+            "$dir/" == root -> ""
+            dir.startsWith(root) -> dir.removePrefix(root)
+            else -> dir.trimStart('/')
+        }
+        return if (rel.isEmpty()) "" else "$rel/"
     }
 
     private fun storageRoots(): List<File> {
@@ -322,7 +338,9 @@ class LibraryScanner(private val context: Context, private val g: AppGraph) {
                 Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
             )
             Build.VERSION.SDK_INT >= 33 -> arrayOf(Manifest.permission.READ_MEDIA_VIDEO)
-            else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+            Build.VERSION.SDK_INT >= 29 -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+            // Android 9 and older: writing too, so downloads can be saved into Movies/.
+            else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
     }
 }

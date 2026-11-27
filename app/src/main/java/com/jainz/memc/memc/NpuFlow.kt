@@ -165,6 +165,25 @@ class NpuFlow private constructor(
             }.getOrDefault(true)
         }
 
+        /**
+         * True on Qualcomm Snapdragon chips, the only ones with the NPU runtime this mode uses.
+         * Other phones (Exynos, Tensor, MediaTek) never load it and use the GPU engine.
+         */
+        val isSnapdragon: Boolean by lazy {
+            val b = android.os.Build.VERSION.SDK_INT
+            val maker = if (b >= 31) android.os.Build.SOC_MANUFACTURER.lowercase() else ""
+            when {
+                maker.contains("qti") || maker.contains("qualcomm") -> true
+                maker.isNotBlank() && maker != "unknown" -> false
+                else -> android.os.Build.HARDWARE.lowercase().startsWith("qcom")
+            }
+        }
+
+        /** The chip, for status lines ("SM8650"), or "" when Android doesn't say. */
+        val chip: String by lazy {
+            if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MODEL.takeIf { it != "unknown" } ?: "" else ""
+        }
+
         fun hasModel(context: Context, m: Model): Boolean =
             runCatching { context.assets.open(m.asset).use { true } }.getOrDefault(false)
 
@@ -176,10 +195,11 @@ class NpuFlow private constructor(
         @Synchronized
         fun create(context: Context, m: Model): NpuFlow {
             resolveInterrupted(context)
+            if (!isSnapdragon) throw IllegalStateException("AI mode needs a Snapdragon chip's NPU")
             state(context).let { if (it.startsWith("failed")) throw IllegalStateException(it.removePrefix("failed: ")) }
             if (!hasModel(context, m)) throw IllegalStateException("the AI model isn't included in this build")
             // Preparing the model is heavy work; never start it on a phone that is already hot.
-            val heat = runCatching { context.getSystemService(android.os.PowerManager::class.java)?.currentThermalStatus ?: 0 }.getOrDefault(0)
+            val heat = com.jainz.memc.core.Compat.thermalStatus(context)
             if (heat >= android.os.PowerManager.THERMAL_STATUS_MODERATE) {
                 throw IllegalStateException("the phone is too hot to start the AI model - let it cool down first")
             }

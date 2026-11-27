@@ -1,0 +1,54 @@
+name: TV Android-version check
+
+# The TV app runs from Android 7, the phone app from Android 10. This runs Android lint on the
+# TV variant and fails if code calls something an older Android doesn't have without checking
+# the version first (that would crash on those TV boxes).
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "tools/**"
+      - "docs/**"
+      - "*.md"
+  workflow_dispatch:
+
+concurrency:
+  group: api-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Lint the TV variant
+        run: |
+          chmod +x gradlew
+          ./gradlew lintTvRelease --continue || true
+      - name: Report calls that need a newer Android
+        run: |
+          python3 - <<'EOF'
+          import glob, sys, xml.etree.ElementTree as ET
+          files = glob.glob("app/build/reports/lint-results-tvRelease.xml") or glob.glob("app/build/**/lint-results*.xml", recursive=True)
+          if not files:
+              print("::error::lint report not found"); sys.exit(1)
+          bad = 0
+          for f in files:
+              for issue in ET.parse(f).getroot().iter("issue"):
+                  if issue.get("id") not in ("NewApi", "InlinedApi"):
+                      continue
+                  loc = issue.find("location")
+                  where = f'{loc.get("file","?").split("/app/src/")[-1]}:{loc.get("line","?")}' if loc is not None else "?"
+                  level = "error" if issue.get("id") == "NewApi" else "warning"
+                  if level == "error":
+                      bad += 1
+                  print(f'::{level}::{issue.get("id")} {where} {issue.get("message")}')
+          print(f"{bad} call(s) that would crash on older Android")
+          sys.exit(1 if bad else 0)
+          EOF

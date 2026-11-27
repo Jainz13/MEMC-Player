@@ -71,7 +71,7 @@ class ExportService : Service() {
     private var speedAt = 0L
     private var speedFrames = 0L
     private var speedText: String? = null
-    private var heatListener: android.os.PowerManager.OnThermalStatusChangedListener? = null
+    private var heatListener: Any? = null
     private var exportControl: MemcControl? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -163,14 +163,9 @@ class ExportService : Service() {
         }
         exportControl = control
         // On a hot phone the export leaves the NPU alone and carries on with the GPU engine.
-        runCatching {
-            val pm = getSystemService(android.os.PowerManager::class.java)
-            heatListener?.let { pm.removeThermalStatusListener(it) }
-            control.thermalLevel = minOf(pm.currentThermalStatus, 2)
-            val listener = android.os.PowerManager.OnThermalStatusChangedListener { control.thermalLevel = minOf(it, 2) }
-            heatListener = listener
-            pm.addThermalStatusListener(mainExecutor, listener)
-        }
+        com.jainz.memc.core.Compat.unwatchHeat(this, heatListener)
+        control.thermalLevel = minOf(com.jainz.memc.core.Compat.thermalStatus(this), 2)
+        heatListener = com.jainz.memc.core.Compat.watchHeat(this) { control.thermalLevel = minOf(it, 2) }
         val effect = MemcEffect(control)
         // Same colour fix as playback, so HDR files missing container colour info export as HDR10.
         val extractors = ColorFixExtractorsFactory(
@@ -358,13 +353,7 @@ class ExportService : Service() {
 
     // ---- Notifications ----------------------------------------------------------------------------
 
-    private fun channel(): String {
-        val nm = getSystemService(NotificationManager::class.java)
-        if (nm.getNotificationChannel(CHANNEL) == null) {
-            nm.createNotificationChannel(NotificationChannel(CHANNEL, "Exports", NotificationManager.IMPORTANCE_LOW))
-        }
-        return CHANNEL
-    }
+    private fun channel(): String = com.jainz.memc.core.Compat.channel(this, CHANNEL, "Exports")
 
     private fun openAppIntent(): PendingIntent = PendingIntent.getActivity(
         this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
@@ -389,7 +378,7 @@ class ExportService : Service() {
         }
         // Not ServiceCompat: it filters the type through Android 14's list, which has no
         // "mediaProcessing" (added in Android 15), and Android then rejects "type none".
-        startForeground(NOTIFICATION_ID, n, type)
+        if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, n, type) else startForeground(NOTIFICATION_ID, n)
     }
 
     private fun notifyDone(title: String, ok: Boolean) {
@@ -422,6 +411,8 @@ class ExportService : Service() {
         transformer?.let { runCatching { it.cancel() } }
         transformer = null
         releaseWakeLock()
+        com.jainz.memc.core.Compat.unwatchHeat(this, heatListener)
+        heatListener = null
         super.onDestroy()
     }
 

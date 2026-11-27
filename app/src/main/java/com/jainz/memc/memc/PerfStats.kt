@@ -111,7 +111,7 @@ object PerfStats {
     }.getOrNull()
 
     private fun thermal(context: Context): String? = runCatching {
-        when (context.getSystemService(PowerManager::class.java)?.currentThermalStatus) {
+        when (com.jainz.memc.core.Compat.thermalStatus(context)) {
             PowerManager.THERMAL_STATUS_NONE -> "cool"
             PowerManager.THERMAL_STATUS_LIGHT -> "warm"
             PowerManager.THERMAL_STATUS_MODERATE -> "hot"

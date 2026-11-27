@@ -174,6 +174,7 @@ object DebugRecorder {
     fun captureScreen(activity: Activity, label: String) {
         val context = appContext ?: return
         if (!_active.value || pictures >= MAX_PICTURES) return
+        if (Build.VERSION.SDK_INT < 26) return
         runCatching {
             val view = activity.window.decorView
             if (view.width <= 0) return

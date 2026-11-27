@@ -60,7 +60,8 @@ class DownloadService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (!isForeground) {
             try {
-                startForeground(NOTIFICATION_ID, notification("Preparing download…", -1), foregroundType())
+                val n = notification("Preparing download…", -1)
+                if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, n, foregroundType()) else startForeground(NOTIFICATION_ID, n)
                 isForeground = true
             } catch (e: Exception) {
                 Downloads.nextQueued()?.let { job ->
@@ -180,7 +181,14 @@ class DownloadService : Service() {
         }
     }
 
-    private fun fullAccess() = Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()
+    /**
+     * Can write files straight into Movies/: "All files" access on Android 11+, or the plain
+     * storage permission on Android 9 and older (TV boxes), which have no media store folders.
+     */
+    private fun fullAccess() = (Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()) ||
+        (Build.VERSION.SDK_INT < 29 && androidx.core.content.ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED)
 
     private fun downloadDir() = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), FOLDER)
 
@@ -205,6 +213,9 @@ class DownloadService : Service() {
                 },
                 abort = { part.delete() },
             )
+        }
+        if (Build.VERSION.SDK_INT < 29) {
+            throw IOException("Allow storage access for MEMC Player (Settings → Apps → MEMC Player → Permissions) to download")
         }
         // Without "All files" access: go through the system media store.
         val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(NameParser.extension(fileName)) ?: "video/x-matroska"
@@ -261,13 +272,7 @@ class DownloadService : Service() {
 
     // ---- Notifications ----------------------------------------------------------------------------
 
-    private fun channel(): String {
-        val nm = getSystemService(NotificationManager::class.java)
-        if (nm.getNotificationChannel(CHANNEL) == null) {
-            nm.createNotificationChannel(NotificationChannel(CHANNEL, "Downloads", NotificationManager.IMPORTANCE_LOW))
-        }
-        return CHANNEL
-    }
+    private fun channel(): String = com.jainz.memc.core.Compat.channel(this, CHANNEL, "Downloads")
 
     private fun openAppIntent(): PendingIntent = PendingIntent.getActivity(
         this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),

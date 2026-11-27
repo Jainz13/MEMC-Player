@@ -37,9 +37,10 @@ android {
     }
 
     // Two variants of the same app:
-    //  phone - everything, for the Galaxy S24 Ultra (Snapdragon 8 Gen 3, 64-bit ARM)
-    //  tv    - library and player for Android TV / Google TV boxes: no 60 fps engine, no export,
-    //          no Explore; remote-control navigation; 32- and 64-bit ARM
+    //  phone - everything, for Android 10+ phones (64-bit ARM). The AI (NPU) mode runs on
+    //          Snapdragon chips; every other phone uses the GPU engine.
+    //  tv    - library and player for any Android TV / Google TV box from Android 7: no 60 fps
+    //          engine, no export, no Explore; remote-control navigation; ARM and x86
     flavorDimensions += "device"
     productFlavors {
         create("phone") {
@@ -51,7 +52,9 @@ android {
             dimension = "device"
             versionNameSuffix = "-tv"
             buildConfigField("boolean", "TV", "true")
-            ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
+            // Many TV boxes in use still run Android 7-9 (Fire TV, Mi Box, cheap Android boxes).
+            minSdk = 24
+            ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64") }
         }
     }
 
@@ -87,6 +90,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // Newer Java library parts (java.time etc.) on Android 7.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     buildFeatures {
@@ -110,12 +115,10 @@ android {
         // Extracted to disk at install: the NPU loads its part of the QNN runtime from a real folder.
         jniLibs {
             useLegacyPackaging = true
-            // Qualcomm runtime parts for other chips. The S24 Ultra's Snapdragon 8 Gen 3 uses the
-            // "V75" NPU; dropping the rest roughly halves the APK.
-            excludes += listOf(
-                "**/libQnnHtpV68*.so", "**/libQnnHtpV69*.so", "**/libQnnHtpV73*.so",
-                "**/libQnnHtpV79*.so", "**/libQnnHtpV81*.so", "**/libQnnDsp*.so", "**/libQnnGpu.so",
-            )
+            // The NPU runtime for every Snapdragon generation (V68 = Snapdragon 888 onwards)
+            // is kept so AI mode works on any Snapdragon phone. Only the parts this app never
+            // uses (the older DSP and GPU back ends) are dropped.
+            excludes += listOf("**/libQnnDsp*.so", "**/libQnnGpu.so")
         }
     }
 
@@ -171,4 +174,5 @@ dependencies {
     "phoneImplementation"(libs.onnxruntime.qnn)
     "tvCompileOnly"(libs.onnxruntime.qnn)
     implementation(libs.coroutines.android)
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 }

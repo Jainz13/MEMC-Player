@@ -1,7 +1,8 @@
 # MEMC Player
 
-A video player for Android with real-time 60 fps frame interpolation (MEMC), built for the
-Galaxy S24 Ultra (Snapdragon 8 Gen 3). Infuse-style library, Nova-style features.
+A video player for Android with real-time 60 fps frame interpolation (MEMC). Infuse-style
+library, Nova-style features. Developed on a Galaxy S24 Ultra (Snapdragon 8 Gen 3); runs on any
+Android 10+ phone, with the AI mode on Snapdragon phones.
 
 ## Features
 
@@ -33,15 +34,19 @@ Galaxy S24 Ultra (Snapdragon 8 Gen 3). Infuse-style library, Nova-style features
 
 ## TV version
 
-Each release also has a `MEMC-Player-TV` APK for Android TV / Google TV boxes such as the Google
-TV Streamer. It is the library and player only (no 60 fps engine, export or Explore) and is
+Each release also has a `MEMC-Player-TV` APK for Android TV, Google TV and Fire TV boxes running
+Android 7 or newer (Google TV Streamer, Chromecast with Google TV, Nvidia Shield, Mi Box, Fire TV
+Stick, ARM and x86 boxes). It is the library and player only (no 60 fps engine, export or Explore) and is
 driven with the remote: OK pauses and shows the controls, left/right seek, up/down show the
 controls, Back hides them.
 
 ## Requirements
 
-Android 10 or newer, 64-bit ARM. The AI (NPU) mode needs a Snapdragon 8 Gen 3; everything else
-runs on the GPU.
+- **Phones:** Android 10 or newer, 64-bit ARM. The 60 fps engine runs on any phone's GPU.
+  The AI (NPU) mode needs a Snapdragon chip (the app carries Qualcomm's NPU runtime for every
+  NPU generation it supports, Snapdragon 888 onwards); it is tuned on the 8 Gen 3, and on slower NPUs
+  it falls back to the GPU engine by itself. Exynos, Tensor and MediaTek phones use the GPU engine.
+- **TV boxes:** Android 7 or newer, ARM or x86.
 
 ## Getting the APK
 

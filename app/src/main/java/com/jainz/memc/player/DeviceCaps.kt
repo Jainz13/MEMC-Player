@@ -62,7 +62,7 @@ object DeviceCaps {
         )
         val found = LinkedHashMap<String, MutableSet<String>>()
         for (info in MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos) {
-            if (info.isEncoder || !info.isHardwareAccelerated) continue
+            if (info.isEncoder || !isHardware(info)) continue
             for (type in info.supportedTypes) {
                 val label = wanted[type.lowercase()] ?: continue
                 val extras = found.getOrPut(label) { linkedSetOf() }
@@ -85,6 +85,15 @@ object DeviceCaps {
             if (extras.isEmpty()) label else "$label (${extras.joinToString(", ")})"
         }
     }
+
+    private fun isHardware(info: android.media.MediaCodecInfo): Boolean =
+        if (Build.VERSION.SDK_INT >= 29) {
+            info.isHardwareAccelerated
+        } else {
+            // Before Android 10 there is no flag: the software decoders are Google's own.
+            val n = info.name.lowercase()
+            !n.startsWith("omx.google.") && !n.startsWith("c2.android.") && !n.contains(".sw.")
+        }
 
     private fun ffmpegAvailable(): Boolean = runCatching {
         androidx.media3.decoder.ffmpeg.FfmpegLibrary.isAvailable()

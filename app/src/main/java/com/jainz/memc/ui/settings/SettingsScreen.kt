@@ -339,11 +339,22 @@ fun SettingsScreen(nav: NavController) {
                 Text("Quality", style = MaterialTheme.typography.bodyMedium)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(0 to "Battery saver", 1 to "Balanced", 2 to "Best", 3 to "AI").forEach { (v, label) ->
-                        FilterChip(selected = memcQuality == v, onClick = { st.memcQuality.set(v) }, label = { Text(label) })
+                        FilterChip(
+                            selected = memcQuality == v,
+                            onClick = { st.memcQuality.set(v) },
+                            label = { Text(label) },
+                            enabled = v != 3 || NpuFlow.isSnapdragon,
+                        )
                     }
                 }
                 Text(
-                    "AI uses the RIFE model on the phone's NPU during playback (one pass per source frame), with Best as its fallback when the NPU isn't ready or can't keep up.",
+                    if (NpuFlow.isSnapdragon) {
+                        "AI uses the RIFE model on the phone's NPU during playback (one pass per source frame), with Best as its fallback when the NPU isn't ready or can't keep up." +
+                            (NpuFlow.chip.takeIf { it.isNotBlank() }?.let { " This phone: Snapdragon $it." } ?: "") +
+                            " Tuned on the 8 Gen 3; on other Snapdragon chips it falls back to Best by itself if the NPU can't keep up."
+                    } else {
+                        "AI needs a Snapdragon chip's NPU, which this phone doesn't have. Best gives the smoothest result here."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = Palette.TextFaint,
                 )
