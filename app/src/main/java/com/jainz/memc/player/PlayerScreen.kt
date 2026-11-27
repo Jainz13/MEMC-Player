@@ -223,7 +223,8 @@ fun PlayerScreen(
     // Position ticker for the seek bar (and the MEMC badge).
     LaunchedEffect(Unit) {
         while (true) {
-            state.tick()
+            // The position is only on screen with the controls or the info panel up.
+            if (controls || panel != null || dragging) state.tick()
             memcActive = memc.active && memc.enabled
             // The processing pipeline fits each frame inside the screen surface, bars included,
             // so stretching or re-shaping the view changed nothing. Giving the surface the
@@ -239,6 +240,10 @@ fun PlayerScreen(
             PlayerState.autoHdrActive = picture.autoHdr && picture.fakedHdr
             delay(250)
         }
+    }
+    // Fresh position the moment the controls or a panel appear (the ticker skips it while hidden).
+    LaunchedEffect(controls, panel) {
+        if (controls || panel != null) state.tick()
     }
     // Auto-hide controls while playing.
     LaunchedEffect(controls, state.isPlaying, interaction, panel) {
@@ -616,31 +621,16 @@ fun PlayerScreen(
                         .displayCutoutPadding()
                         .padding(horizontal = 20.dp, vertical = 8.dp),
                 ) {
-                    val dur = state.duration.coerceAtLeast(1L).toFloat()
-                    val shown = if (scrubbing) scrubValue else state.position.toFloat()
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(Format.clock(shown.toLong()), color = Color.White, style = MaterialTheme.typography.labelLarge)
-                        Slider(
-                            value = shown.coerceIn(0f, dur),
-                            onValueChange = { scrubbing = true; scrubValue = it; poke() },
-                            onValueChangeFinished = {
-                                player.seekTo(scrubValue.toLong())
-                                scrubbing = false
-                            },
-                            valueRange = 0f..dur,
-                            colors = SliderDefaults.colors(
-                                thumbColor = Palette.Accent,
-                                activeTrackColor = Palette.Accent,
-                                inactiveTrackColor = Color(0x55FFFFFF),
-                            ),
-                            modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
-                        )
-                        Text(
-                            "-" + Format.clock((state.duration - shown.toLong()).coerceAtLeast(0)),
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelLarge,
-                        )
-                    }
+                    SeekRow(
+                        state = state,
+                        scrubbing = scrubbing,
+                        scrubValue = scrubValue,
+                        onScrub = { scrubbing = true; scrubValue = it; poke() },
+                        onScrubEnd = {
+                            player.seekTo(scrubValue.toLong())
+                            scrubbing = false
+                        },
+                    )
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         BarIcon(Icons.Filled.Lock, "Lock controls") { locked = true; controls = true; poke() }
                         Spacer(Modifier.weight(1f))
@@ -853,6 +843,42 @@ fun PlayerScreen(
         }
     }
 
+}
+
+/**
+ * Clock, seek bar and time left. Its own composable so the position ticking four times a
+ * second redraws only this row, not the whole control overlay.
+ */
+@Composable
+private fun SeekRow(
+    state: PlayerState,
+    scrubbing: Boolean,
+    scrubValue: Float,
+    onScrub: (Float) -> Unit,
+    onScrubEnd: () -> Unit,
+) {
+    val dur = state.duration.coerceAtLeast(1L).toFloat()
+    val shown = if (scrubbing) scrubValue else state.position.toFloat()
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(Format.clock(shown.toLong()), color = Color.White, style = MaterialTheme.typography.labelLarge)
+        Slider(
+            value = shown.coerceIn(0f, dur),
+            onValueChange = onScrub,
+            onValueChangeFinished = onScrubEnd,
+            valueRange = 0f..dur,
+            colors = SliderDefaults.colors(
+                thumbColor = Palette.Accent,
+                activeTrackColor = Palette.Accent,
+                inactiveTrackColor = Color(0x55FFFFFF),
+            ),
+            modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+        )
+        Text(
+            "-" + Format.clock((state.duration - shown.toLong()).coerceAtLeast(0)),
+            color = Color.White,
+            style = MaterialTheme.typography.labelLarge,
+        )
+    }
 }
 
 @Composable

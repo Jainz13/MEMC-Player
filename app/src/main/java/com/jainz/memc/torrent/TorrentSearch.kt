@@ -7,7 +7,6 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
@@ -48,7 +47,7 @@ object TorrentSearch {
 
     private val everything = Category.entries.toSet()
 
-    private val http = OkHttpClient.Builder()
+    private val http = com.jainz.memc.core.Http.client.newBuilder()
         .connectTimeout(12, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).callTimeout(25, TimeUnit.SECONDS).build()
 
     // Public trackers added to magnet links built from a bare hash (ngosang/trackerslist "best").

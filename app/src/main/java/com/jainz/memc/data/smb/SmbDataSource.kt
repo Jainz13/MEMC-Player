@@ -100,7 +100,7 @@ class SmbDataSource(private val pool: SmbPool) : BaseDataSource(/* isNetwork = *
         while (it.hasNext()) {
             val e = it.next()
             if (e.key < idx) {
-                e.value.cancel(false)
+                recycle(e.value)
                 it.remove()
             }
         }
@@ -125,10 +125,25 @@ class SmbDataSource(private val pool: SmbPool) : BaseDataSource(/* isNetwork = *
         }
     }
 
+    /**
+     * Gives a finished chunk's memory back for the next read. A 4K remux streams about ten
+     * 1 MB chunks a second; reusing them keeps the garbage collector out of playback.
+     * Reads still running are only cancelled: their buffer may still be written to.
+     */
+    private fun recycle(future: Future<ByteArray>) {
+        if (!future.isDone) {
+            future.cancel(false)
+            return
+        }
+        val buf = runCatching { future.get() }.getOrNull() ?: return
+        if (buf.size != CHUNK) return
+        synchronized(spare) { if (spare.size < MAX_SPARE) spare.addLast(buf) }
+    }
+
     private fun readChunk(f: File, index: Long): ByteArray {
         val start = index * CHUNK
         val len = min(CHUNK.toLong(), fileSize - start).toInt()
-        val buf = ByteArray(len)
+        val buf = if (len == CHUNK) synchronized(spare) { spare.removeFirstOrNull() } ?: ByteArray(len) else ByteArray(len)
         var got = 0
         val step = maxRead
         while (got < len) {
@@ -143,7 +158,7 @@ class SmbDataSource(private val pool: SmbPool) : BaseDataSource(/* isNetwork = *
 
     override fun close() {
         uri = null
-        chunks.values.forEach { it.cancel(false) }
+        chunks.values.forEach { recycle(it) }
         chunks.clear()
         try {
             file?.close()
@@ -161,6 +176,9 @@ class SmbDataSource(private val pool: SmbPool) : BaseDataSource(/* isNetwork = *
         private const val CHUNK = SmbPool.READ_CHUNK
         /** Chunks requested ahead of the one being read (about 6 MB in flight). */
         private const val AHEAD = 6L
+        /** Chunk buffers kept for reuse, shared by all open files (about 10 MB at most). */
+        private const val MAX_SPARE = 10
+        private val spare = ArrayDeque<ByteArray>()
 
         private val threadCount = AtomicInteger()
         private val executor: ExecutorService = Executors.newCachedThreadPool { r ->

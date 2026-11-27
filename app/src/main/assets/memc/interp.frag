@@ -29,6 +29,11 @@ void main() {
 
     float bad = smoothstep(uCost.x, uCost.y, mv.z);
     bad = max(bad, smoothstep(0.10, 0.28, abs(lum(p.rgb) - lum(c.rgb))));
-    vec4 nearest = uAlpha < 0.5 ? texture(uPrev, vTexCoords) : texture(uCur, vTexCoords);
-    outColor = mix(blended, nearest, bad);
+    // Most of the picture is reliable: only fetch the fallback where it is needed.
+    if (bad > 0.0) {
+        vec4 nearest = uAlpha < 0.5 ? texture(uPrev, vTexCoords) : texture(uCur, vTexCoords);
+        outColor = mix(blended, nearest, bad);
+    } else {
+        outColor = blended;
+    }
 }

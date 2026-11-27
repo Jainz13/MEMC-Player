@@ -15,8 +15,14 @@ import com.jainz.memc.data.db.Kind
 import com.jainz.memc.data.db.ScrapeState
 import com.jainz.memc.data.db.SourceEntity
 import com.jainz.memc.data.db.VideoEntity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -165,32 +171,52 @@ class LibraryScanner(private val context: Context, private val g: AppGraph) {
     suspend fun scanSource(src: SourceEntity): Int = withContext(Dispatchers.IO) {
         val found = ArrayList<FoundFile>()
         val failedDirs = ArrayList<String>()
-        val stack = ArrayDeque<Pair<String, Int>>()
-        stack.addLast(src.path.trim('/') to 0)
-        while (stack.isNotEmpty()) {
+        val root = src.path.trim('/')
+        // The share root first: if that fails the server is unreachable, so the scan stops and
+        // the library is kept as it is.
+        var level = listOf(root to g.smb.list(g.smb.location(src, root)))
+        var depth = 0
+        // Then one folder level at a time, a few folders at once: every listing is a network
+        // round trip, and a library of a few hundred season folders was spending most of its
+        // scan time waiting on them one after another.
+        val gate = Semaphore(LIST_PARALLEL)
+        while (level.isNotEmpty()) {
             ensureActive()
-            val (dir, depth) = stack.removeLast()
-            val entries = try {
-                g.smb.list(g.smb.location(src, dir))
-            } catch (e: Exception) {
-                // The share root failing means the server is unreachable: abort and keep the library as is.
-                // A single unreadable sub-folder is skipped, and its existing entries are kept.
-                if (depth == 0) throw e
-                failedDirs += "/$dir"
-                continue
+            val next = ArrayList<String>()
+            for ((dir, entries) in level) {
+                for (e in entries) {
+                    if (e.isDir) {
+                        if (depth < 12 && !skipDir(e.name)) next += e.path
+                    } else if (NameParser.isVideo(e.name)) {
+                        if (e.name.contains("sample", ignoreCase = true) && e.size < 300L * MB) continue
+                        found += FoundFile(
+                            uri = g.smb.uriFor(src, e.path),
+                            folder = "/" + dir,
+                            fileName = e.name,
+                            size = e.size,
+                            modified = e.modified,
+                        )
+                    }
+                }
             }
-            for (e in entries) {
-                if (e.isDir) {
-                    if (depth < 12 && !skipDir(e.name)) stack.addLast(e.path to depth + 1)
-                } else if (NameParser.isVideo(e.name)) {
-                    if (e.name.contains("sample", ignoreCase = true) && e.size < 300L * MB) continue
-                    found += FoundFile(
-                        uri = g.smb.uriFor(src, e.path),
-                        folder = "/" + dir,
-                        fileName = e.name,
-                        size = e.size,
-                        modified = e.modified,
-                    )
+            depth++
+            level = coroutineScope {
+                next.map { dir ->
+                    async {
+                        gate.withPermit {
+                            // A single unreadable sub-folder is skipped, and its existing entries are kept.
+                            runCatching { g.smb.list(g.smb.location(src, dir)) }
+                                .onFailure { if (it is CancellationException) throw it }
+                                .getOrNull()
+                        }.let { dir to it }
+                    }
+                }.awaitAll()
+            }.mapNotNull { (dir, entries) ->
+                if (entries == null) {
+                    failedDirs += "/$dir"
+                    null
+                } else {
+                    dir to entries
                 }
             }
         }
@@ -275,6 +301,8 @@ class LibraryScanner(private val context: Context, private val g: AppGraph) {
     companion object {
         const val DEVICE_SOURCE = 0L
         private const val MB = 1024L * 1024L
+        /** Folder listings in flight at once on one share. */
+        private const val LIST_PARALLEL = 4
         private val PERSONAL_FOLDERS = Regex(
             """(?i)(^|/)(DCIM|Screenshots|Screen ?recordings?|WhatsApp|Snapchat|Instagram|Recordings|Camera)(/|$)"""
         )

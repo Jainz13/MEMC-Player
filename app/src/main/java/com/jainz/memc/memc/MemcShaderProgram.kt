@@ -82,6 +82,7 @@ class MemcShaderProgram(
     private var lastPtsUs = C.TIME_UNSET
     private val jobs = ArrayDeque<Job>()
     private val recentDeltas = ArrayDeque<Long>()
+    private val sortedDeltas = LongArray(10)
     private var readySignalled = false
     private var endOfStreamPending = false
 
@@ -92,8 +93,6 @@ class MemcShaderProgram(
     private val lumaValid = BooleanArray(2)
     private var motionReady = false
     private var npuFlowValid = false
-    private var npuFlowIn: FloatArray? = null
-    private var npuFlowOut: FloatArray? = null
     private var npuBytes: ByteArray? = null
     private var npuPlanar: FloatArray? = null
     private var npuTexW = 0
@@ -104,7 +103,7 @@ class MemcShaderProgram(
     private val npuImage = arrayOfNulls<java.nio.FloatBuffer>(2)
     private val npuImageValid = BooleanArray(2)
     private var npuPixels: java.nio.ByteBuffer? = null
-    private var npuFlowUpload: java.nio.FloatBuffer? = null
+    private var npuMs = -1
     private var npuFlowTex = 0
     private var npuMaskTex = 0
     private var npuSceneCut = false
@@ -173,7 +172,8 @@ class MemcShaderProgram(
                 GLES30.glGetQueryObjectuiv(q, GLES30.GL_QUERY_RESULT, queryValue, 0)
                 val waited = pendingNpuNs.removeFirst()
                 PerfStats.gpuNs.addAndGet(((queryValue[0].toLong() and 0xFFFFFFFFL) - waited).coerceAtLeast(0))
-                GLES30.glDeleteQueries(1, intArrayOf(q), 0)
+                queryValue[0] = q
+                GLES30.glDeleteQueries(1, queryValue, 0)
                 pendingQueries.removeFirst()
             }
             if (pendingQueries.size > 32) return false
@@ -341,8 +341,18 @@ class MemcShaderProgram(
         if (dt !in VALID_DT) return
         recentDeltas.addLast(dt)
         if (recentDeltas.size > 9) recentDeltas.removeFirst()
-        val sorted = recentDeltas.sorted()
-        control.sourceFps = 1_000_000f / sorted[sorted.size / 2]
+        // Median of the last few frame gaps (insertion sort into a reused array).
+        val n = recentDeltas.size
+        for (i in 0 until n) {
+            val v = recentDeltas[i]
+            var j = i - 1
+            while (j >= 0 && sortedDeltas[j] > v) {
+                sortedDeltas[j + 1] = sortedDeltas[j]
+                j--
+            }
+            sortedDeltas[j + 1] = v
+        }
+        control.sourceFps = 1_000_000f / sortedDeltas[n / 2]
     }
 
     /**
@@ -406,7 +416,8 @@ class MemcShaderProgram(
     /** Block-matching motion for the current pair, computed on first use. */
     private fun ensureMotion() {
         if (motionReady) return
-        for (i in intArrayOf(prev, cur)) {
+        for (k in 0..1) {
+            val i = if (k == 0) prev else cur
             if (lumaValid[i]) continue
             drawLuma(frames[i]!!, lumaFine[i]!!)
             drawCopy(lumaFine[i]!!, lumaCoarse[i]!!)
@@ -500,7 +511,7 @@ class MemcShaderProgram(
         draw(coarse, searchProgram) { p ->
             p.setSamplerTexIdUniform("uCur", lumaCoarse[cur]!!.texId, 0)
             p.setSamplerTexIdUniform("uPrev", lumaCoarse[prev]!!.texId, 1)
-            p.setFloatsUniform("uSizeF", floatArrayOf((workW / 2).toFloat(), (workH / 2).toFloat()))
+            p.setFloatsUniform("uSizeF", vec2((workW / 2).toFloat(), (workH / 2).toFloat()))
             p.setIntUniform("uBlock", BLOCK)
             p.setIntUniform("uStep", if (q >= 2) 1 else 2)
             p.setIntUniform("uRange", if (q == 0) 6 else 8)
@@ -509,36 +520,34 @@ class MemcShaderProgram(
             p.setSamplerTexIdUniform("uCur", lumaFine[cur]!!.texId, 0)
             p.setSamplerTexIdUniform("uPrev", lumaFine[prev]!!.texId, 1)
             p.setSamplerTexIdUniform("uCoarse", coarse.texId, 2)
-            p.setFloatsUniform("uSizeF", floatArrayOf(workW.toFloat(), workH.toFloat()))
-            p.setFloatsUniform("uCoarseBlocksF", floatArrayOf(coarse.width.toFloat(), coarse.height.toFloat()))
+            p.setFloatsUniform("uSizeF", vec2(workW.toFloat(), workH.toFloat()))
+            p.setFloatsUniform("uCoarseBlocksF", vec2(coarse.width.toFloat(), coarse.height.toFloat()))
             p.setIntUniform("uBlock", BLOCK)
         }
         draw(mvSmooth!!, smoothProgram) { p ->
             p.setSamplerTexIdUniform("uMv", fine.texId, 0)
             p.setSamplerTexIdUniform("uCur", lumaFine[cur]!!.texId, 1)
             p.setSamplerTexIdUniform("uPrev", lumaFine[prev]!!.texId, 2)
-            p.setFloatsUniform("uBlocksF", floatArrayOf(fine.width.toFloat(), fine.height.toFloat()))
-            p.setFloatsUniform("uSizeF", floatArrayOf(workW.toFloat(), workH.toFloat()))
+            p.setFloatsUniform("uBlocksF", vec2(fine.width.toFloat(), fine.height.toFloat()))
+            p.setFloatsUniform("uSizeF", vec2(workW.toFloat(), workH.toFloat()))
             p.setIntUniform("uBlock", BLOCK)
         }
     }
 
     private fun drawInterp(out: GlTextureInfo, alpha: Float) {
         ensureMotion()
-        val (lo, hi) = when (allocatedQuality) {
-            0 -> 0.045f to 0.12f
-            2 -> 0.030f to 0.09f
-            else -> 0.035f to 0.10f
-        }
+        val q = allocatedQuality
+        val lo = when (q) { 0 -> 0.045f; 2 -> 0.030f; else -> 0.035f }
+        val hi = when (q) { 0 -> 0.12f; 2 -> 0.09f; else -> 0.10f }
         draw(out, interpProgram) { p ->
             p.setSamplerTexIdUniform("uPrev", frames[prev]!!.texId, 0)
             p.setSamplerTexIdUniform("uCur", frames[cur]!!.texId, 1)
             p.setSamplerTexIdUniform("uMv", mvSmooth!!.texId, 2)
             p.setFloatUniform("uAlpha", alpha)
-            p.setFloatsUniform("uMvToUv", floatArrayOf(1f / workW, 1f / workH))
+            p.setFloatsUniform("uMvToUv", vec2(1f / workW, 1f / workH))
             p.setFloatsUniform("uCoeffs", coeffs)
             p.setFloatUniform("uLumaScale", lumaScale)
-            p.setFloatsUniform("uCost", floatArrayOf(lo, hi))
+            p.setFloatsUniform("uCost", vec2(lo, hi))
         }
     }
 
@@ -562,7 +571,8 @@ class MemcShaderProgram(
             val w = n.width
             val h = n.height
             var refreshed = false
-            for (i in intArrayOf(prev, cur)) {
+            for (k in 0..1) {
+                val i = if (k == 0) prev else cur
                 if (npuImageValid[i]) continue
                 readSmall(i, w, h)
                 npuImageValid[i] = true
@@ -583,29 +593,11 @@ class MemcShaderProgram(
             // which keeps the NPU work to one pass per source frame.
             if (!live || !npuFlowValid) {
                 val (flow, mask) = n.run(npuImage[prev]!!, npuImage[cur]!!, if (live) 0.5f else alpha)
-                // Planar (x0,y0,x1,y1 planes) -> one RGBA texel per pixel.
-                // Done on plain arrays: element-by-element buffer access was costing several
-                // milliseconds per source frame.
-                val upload = npuFlowUpload!!
-                val plane = w * h
-                val src = npuFlowIn ?: FloatArray(4 * plane).also { npuFlowIn = it }
-                val dst = npuFlowOut ?: FloatArray(4 * plane).also { npuFlowOut = it }
-                flow.rewind()
-                flow.get(src, 0, 4 * plane)
-                var o = 0
-                for (p in 0 until plane) {
-                    dst[o] = src[p]
-                    dst[o + 1] = src[plane + p]
-                    dst[o + 2] = src[2 * plane + p]
-                    dst[o + 3] = src[3 * plane + p]
-                    o += 4
-                }
-                upload.clear()
-                upload.put(dst, 0, 4 * plane)
-                upload.rewind()
-                mask.rewind()
+                // The model's four flow planes (x0, y0, x1, y1) go up as they are, stacked in one
+                // single-channel texture four planes tall; the shader picks the plane it needs.
+                // No rearranging on the CPU and no extra copy.
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, npuFlowTex)
-                GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, w, h, GLES30.GL_RGBA, GLES20.GL_FLOAT, upload)
+                GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, w, 4 * h, GLES30.GL_RED, GLES20.GL_FLOAT, flow)
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, npuMaskTex)
                 GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, w, h, GLES30.GL_RED, GLES20.GL_FLOAT, mask)
                 GlUtil.checkGlError()
@@ -617,12 +609,18 @@ class MemcShaderProgram(
                 p.setSamplerTexIdUniform("uCur", frames[cur]!!.texId, 1)
                 p.setSamplerTexIdUniform("uFlow", npuFlowTex, 2)
                 p.setSamplerTexIdUniform("uMask", npuMaskTex, 3)
-                p.setFloatsUniform("uFlowToUv", floatArrayOf(1f / w, 1f / h))
-                p.setFloatsUniform("uFlowScale", if (live) floatArrayOf(alpha / 0.5f, (1f - alpha) / 0.5f) else floatArrayOf(1f, 1f))
+                p.setFloatsUniform("uFlowToUv", vec2(1f / w, 1f / h))
+                p.setFloatUniform("uFlowHalfTexel", 0.5f / h)
+                p.setFloatsUniform("uFlowScale", if (live) vec2(alpha / 0.5f, (1f - alpha) / 0.5f) else vec2(1f, 1f))
                 p.setFloatUniform("uAlpha", alpha)
                 p.setIntUniform("uTimeBlend", if (live) 1 else 0)
             }
-            control.npuStatus = String.format(java.util.Locale.US, "AI on the NPU, %.0f ms per pass", n.averageMs)
+            // Only rebuilt when the figure changes (this runs for every in-between frame).
+            val ms = (n.averageMs + 0.5f).toInt()
+            if (ms != npuMs || !control.npuStatus.startsWith("AI on")) {
+                npuMs = ms
+                control.npuStatus = "AI on the NPU, $ms ms per pass"
+            }
             return true
         } catch (e: Throwable) {
             npuFailed(e)
@@ -662,14 +660,13 @@ class MemcShaderProgram(
                 npuSmall.filterNotNull().forEach { runCatching { it.release() } }
                 if (npuFlowTex != 0) GLES20.glDeleteTextures(2, intArrayOf(npuFlowTex, npuMaskTex), 0)
                 for (i in 0..1) {
-                    npuFlowIn = null; npuFlowOut = null; npuBytes = null; npuPlanar = null
+                    npuBytes = null; npuPlanar = null
                     npuSmall[i] = texture(n.width, n.height, false)
                     npuImage[i] = NpuFlow.floats(3 * n.width * n.height)
                     npuImageValid[i] = false
                 }
                 npuPixels = java.nio.ByteBuffer.allocateDirect(n.width * n.height * 4).order(java.nio.ByteOrder.nativeOrder())
-                npuFlowUpload = NpuFlow.floats(4 * n.width * n.height)
-                npuFlowTex = floatTexture(n.width, n.height, GLES30.GL_RGBA16F, GLES30.GL_RGBA)
+                npuFlowTex = floatTexture(n.width, 4 * n.height, GLES30.GL_R16F, GLES30.GL_RED)
                 npuMaskTex = floatTexture(n.width, n.height, GLES30.GL_R16F, GLES30.GL_RED)
                 npuTexW = n.width
                 npuTexH = n.height
@@ -751,7 +748,7 @@ class MemcShaderProgram(
     private fun drawLuma(src: GlTextureInfo, dst: GlTextureInfo) {
         draw(dst, lumaProgram) { p ->
             p.setSamplerTexIdUniform("uTex", src.texId, 0)
-            p.setFloatsUniform("uOutTexel", floatArrayOf(1f / dst.width, 1f / dst.height))
+            p.setFloatsUniform("uOutTexel", vec2(1f / dst.width, 1f / dst.height))
             p.setFloatsUniform("uCoeffs", coeffs)
             p.setFloatUniform("uLumaScale", lumaScale)
         }
@@ -836,6 +833,14 @@ class MemcShaderProgram(
         mvCoarse = null
         mvFine = null
         mvSmooth = null
+    }
+
+    /** Uniform values are copied when set, so one scratch array serves every vec2 (no garbage per frame). */
+    private val scratch2 = FloatArray(2)
+    private fun vec2(a: Float, b: Float): FloatArray {
+        scratch2[0] = a
+        scratch2[1] = b
+        return scratch2
     }
 
     private fun even(v: Float): Int = max(2, v.roundToInt() / 2 * 2)

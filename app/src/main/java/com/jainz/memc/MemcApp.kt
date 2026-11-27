@@ -5,6 +5,7 @@ import android.content.Context
 import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
+import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.crossfade
 import com.jainz.memc.core.CrashLog
 import com.jainz.memc.core.DebugRecorder
@@ -46,6 +47,8 @@ class MemcApp : Application(), SingletonImageLoader.Factory {
 
     override fun newImageLoader(context: PlatformContext): ImageLoader =
         ImageLoader.Builder(context)
+            // Posters share the app's HTTP connections.
+            .components { add(OkHttpNetworkFetcherFactory(callFactory = { com.jainz.memc.core.Http.client })) }
             .crossfade(true)
             .build()
 

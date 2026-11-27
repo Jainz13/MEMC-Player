@@ -17,7 +17,21 @@ object Crypto {
     private const val ALIAS = "memc_smb_secret"
     private const val TRANSFORM = "AES/GCM/NoPadding"
 
+    /** The key handle (the key itself stays in the keystore); looked up once per app run. */
+    @Volatile private var cachedKey: SecretKey? = null
+
+    /**
+     * Decrypted passwords by ciphertext. Every video open and seek on a share needs the login,
+     * and each keystore decryption is a round trip to a system service.
+     */
+    private val plainCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     private fun key(): SecretKey {
+        cachedKey?.let { return it }
+        return loadKey().also { cachedKey = it }
+    }
+
+    private fun loadKey(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (ks.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
         val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
@@ -41,11 +55,15 @@ object Crypto {
 
     fun decrypt(enc: String): String {
         if (enc.isEmpty()) return ""
+        plainCache[enc]?.let { return it }
         return try {
             val raw = Base64.decode(enc, Base64.NO_WRAP)
             val cipher = Cipher.getInstance(TRANSFORM)
             cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, raw, 0, 12))
-            String(cipher.doFinal(raw, 12, raw.size - 12), Charsets.UTF_8)
+            String(cipher.doFinal(raw, 12, raw.size - 12), Charsets.UTF_8).also {
+                if (plainCache.size > 32) plainCache.clear()
+                plainCache[enc] = it
+            }
         } catch (e: Exception) {
             ""
         }

@@ -42,8 +42,17 @@ void main() {
 
     float best = 1e9;
     ivec2 bv = ivec2(0);
+    ivec2 seeds[6];
     for (int i = 0; i < 6; i++) {
         ivec2 c0 = ivec2(round(preds[i]));
+        seeds[i] = c0;
+        // Neighbouring blocks usually move together: a seed already searched is skipped
+        // (in still or evenly moving areas this cuts the work several times over).
+        bool seen = false;
+        for (int j = 0; j < i; j++) {
+            if (seeds[j] == c0) seen = true;
+        }
+        if (seen) continue;
         for (int dy = -2; dy <= 2; dy++) {
             for (int dx = -2; dx <= 2; dx++) {
                 ivec2 v = c0 + ivec2(dx, dy);

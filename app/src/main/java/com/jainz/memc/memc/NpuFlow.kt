@@ -27,9 +27,26 @@ class NpuFlow private constructor(
     val height: Int,
 ) : AutoCloseable {
 
+    private val plane = width * height
     private val shape = longArrayOf(1, 3, height.toLong(), width.toLong())
     private val tShape = longArrayOf(1, 1, height.toLong(), width.toLong())
-    private val timestep: FloatBuffer = floats(width * height)
+    private val timestep: FloatBuffer = floats(plane)
+    private val timestepTensor: OnnxTensor = OnnxTensor.createTensor(env, timestep, tShape)
+
+    // The model writes straight into these (no copy, no garbage per pass): the flow as four
+    // planes (x0, y0, x1, y1) one after another, and the blend mask as one plane.
+    private val outNames = session.outputNames.toList()
+    private val flowOut: FloatBuffer = floats(4 * plane)
+    private val maskOut: FloatBuffer = floats(plane)
+    private val flowTensor = OnnxTensor.createTensor(env, flowOut, longArrayOf(1, 4, height.toLong(), width.toLong()))
+    private val maskTensor = OnnxTensor.createTensor(env, maskOut, longArrayOf(1, 1, height.toLong(), width.toLong()))
+    private val pinned = mapOf(
+        (outNames.firstOrNull { it == "flow" } ?: outNames[0]) to flowTensor,
+        (outNames.firstOrNull { it == "mask" } ?: outNames[1]) to maskTensor,
+    )
+
+    /** Input tensors wrap the caller's (direct) buffers, so they are made once per buffer. */
+    private val inputTensors = java.util.IdentityHashMap<FloatBuffer, OnnxTensor>()
 
     /** Average milliseconds per frame so far. */
     @Volatile var averageMs = 0f
@@ -38,39 +55,53 @@ class NpuFlow private constructor(
         private set
 
     private var timestepValue = Float.NaN
+    private var timestepFill: FloatArray? = null
 
-    /** Returns flow (4 planes of width*height) and mask (1 plane), valid until the next call. */
+    private fun tensorFor(img: FloatBuffer): OnnxTensor {
+        inputTensors[img]?.let { return it }
+        // A new video pipeline brings new buffers: drop the wrappers of the old ones.
+        if (inputTensors.size >= 4) releaseInputs()
+        require(img.isDirect && img.capacity() >= 3 * plane) { "model input must be a direct buffer of 3 planes" }
+        return OnnxTensor.createTensor(env, img, shape).also { inputTensors[img] = it }
+    }
+
+    /**
+     * Runs the model. Returns flow (4 planes of width*height) and mask (1 plane); both are
+     * reused and only valid until the next call.
+     */
     fun run(img0: FloatBuffer, img1: FloatBuffer, t: Float): Pair<FloatBuffer, FloatBuffer> {
         val start = System.nanoTime()
         if (t != timestepValue) {
+            val fill = timestepFill ?: FloatArray(plane).also { timestepFill = it }
+            fill.fill(t)
             timestep.clear()
-            for (i in 0 until width * height) timestep.put(t)
+            timestep.put(fill)
+            timestep.rewind()
             timestepValue = t
         }
-        timestep.rewind()
-        img0.rewind()
-        img1.rewind()
-        OnnxTensor.createTensor(env, img0, shape).use { a ->
-            OnnxTensor.createTensor(env, img1, shape).use { b ->
-                OnnxTensor.createTensor(env, timestep, tShape).use { c ->
-                    session.run(mapOf("img0" to a, "img1" to b, "timestep" to c)).use { result ->
-                        val flow = (result.get(0) as OnnxTensor).floatBuffer
-                        val mask = (result.get(1) as OnnxTensor).floatBuffer
-                        val spent = System.nanoTime() - start
-                        PerfStats.npuNs.addAndGet(spent)
-                        PerfStats.npuRuns.incrementAndGet()
-                        val ms = spent / 1_000_000f
-                        runs++
-                        averageMs += (ms - averageMs) / runs
-                        return flow to mask
-                    }
-                }
-            }
-        }
+        session.run(mapOf("img0" to tensorFor(img0), "img1" to tensorFor(img1), "timestep" to timestepTensor), pinned).close()
+        val spent = System.nanoTime() - start
+        PerfStats.npuNs.addAndGet(spent)
+        PerfStats.npuRuns.incrementAndGet()
+        val ms = spent / 1_000_000f
+        runs++
+        averageMs += (ms - averageMs) / runs
+        flowOut.rewind()
+        maskOut.rewind()
+        return flowOut to maskOut
+    }
+
+    /** Forgets the input buffers seen so far (they are wrapped, not copied). */
+    fun releaseInputs() {
+        inputTensors.values.forEach { runCatching { it.close() } }
+        inputTensors.clear()
     }
 
     override fun close() {
         runCatching { session.close() }
+        inputTensors.values.forEach { runCatching { it.close() } }
+        inputTensors.clear()
+        listOf(timestepTensor, flowTensor, maskTensor).forEach { runCatching { it.close() } }
     }
 
     companion object {
@@ -199,6 +230,7 @@ class NpuFlow private constructor(
                 // Test run, so a broken setup fails here and not in the middle of a video.
                 val blank = floats(3 * m.width * m.height)
                 npu.run(blank, floats(3 * m.width * m.height), 0.5f)
+                npu.releaseInputs()
                 npu.averageMs = 0f
                 npu.runs = 0
                 setState(context, "ok")

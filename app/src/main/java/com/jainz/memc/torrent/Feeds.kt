@@ -5,7 +5,6 @@ import android.util.Xml
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
@@ -38,7 +37,7 @@ data class FeedItem(
  */
 object Feeds {
     private const val PREFS = "torrent_feeds"
-    private val http = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+    private val http = com.jainz.memc.core.Http.client.newBuilder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
 
     fun list(context: Context): List<Feed> {
         val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("feeds", "[]") ?: "[]"

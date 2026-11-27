@@ -114,10 +114,16 @@ class SmbPool(private val db: AppDatabase) {
 
     // ---- Connections ----------------------------------------------------------
 
+    /**
+     * The open share for [loc]. With [replacing], that share failed: a new connection is made,
+     * unless another thread has already replaced it (several reads and folder listings run at
+     * once and would otherwise keep closing each other's brand-new connections).
+     */
     @Synchronized
-    private fun share(loc: SmbLocation, fresh: Boolean = false, plain: Boolean = false): DiskShare {
+    private fun share(loc: SmbLocation, fresh: Boolean = false, plain: Boolean = false, replacing: DiskShare? = null): DiskShare {
         val key = "${loc.host}:${loc.port}/${loc.share.lowercase()}/${loc.auth.user}"
         if (!fresh) shares[key]?.let { if (it.isConnected) return it }
+        if (replacing != null) shares[key]?.let { if (it !== replacing && it.isConnected) return it }
         shares.remove(key)?.let { old ->
             // Close the whole connection, not just the share: the library keeps connections
             // per server and would otherwise hand the same dead one straight back.
@@ -159,14 +165,20 @@ class SmbPool(private val db: AppDatabase) {
         return false
     }
 
+    /** The server answered, but about this one file or folder: reconnecting won't change it. */
+    private fun fileProblem(e: Throwable): Boolean =
+        e is com.hierynomus.mssmb2.SMBApiException && e.status.name in FILE_ERRORS
+
     /** Runs [block] on the share; if the connection went stale, reconnects once and retries. */
     private fun <T> withShare(loc: SmbLocation, block: (DiskShare) -> T): T {
+        var first: DiskShare? = null
         return try {
-            block(share(loc))
+            block(share(loc).also { first = it })
         } catch (e: Exception) {
             if (e is InterruptedException) throw e
+            if (first != null && fileProblem(e)) throw IOException(friendlyError(e), e)
             try {
-                block(share(loc, fresh = true))
+                block(share(loc, fresh = true, replacing = first))
             } catch (e2: Exception) {
                 if (e2 is InterruptedException) throw e2
                 if (!dropped(e2)) throw if (e2 is IOException) e2 else IOException(friendlyError(e2), e2)
@@ -269,6 +281,13 @@ class SmbPool(private val db: AppDatabase) {
 
     companion object {
         const val READ_CHUNK = 1024 * 1024
+
+        private val FILE_ERRORS = setOf(
+            "STATUS_ACCESS_DENIED", "STATUS_OBJECT_NAME_NOT_FOUND", "STATUS_OBJECT_PATH_NOT_FOUND",
+            "STATUS_SHARING_VIOLATION", "STATUS_MEDIA_WRITE_PROTECTED", "STATUS_FILE_IS_A_DIRECTORY",
+            "STATUS_NOT_A_DIRECTORY", "STATUS_DELETE_PENDING", "STATUS_CANNOT_DELETE",
+            "STATUS_DIRECTORY_NOT_EMPTY", "STATUS_OBJECT_NAME_COLLISION",
+        )
 
         fun friendlyError(e: Throwable): String {
             val msg = (e.cause?.message ?: e.message ?: e.javaClass.simpleName)

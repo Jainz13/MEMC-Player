@@ -9,12 +9,10 @@ import com.jainz.memc.data.db.ShowEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
-import java.util.concurrent.TimeUnit
 
 object Tmdb {
     const val ATTRIBUTION = "This product uses the TMDB API but is not endorsed or certified by TMDB."
@@ -42,10 +40,7 @@ data class SearchResult(
 
 class TmdbClient(private val settings: Settings) {
 
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .build()
+    private val http = com.jainz.memc.core.Http.client
 
     val hasKey: Boolean get() = settings.tmdbKey.value.isNotBlank()
 
