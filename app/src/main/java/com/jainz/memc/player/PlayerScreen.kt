@@ -4,6 +4,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.filled.PhotoSizeSelectActual
 import androidx.compose.material.icons.filled.Crop
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material.icons.filled.FitScreen
 import android.view.SurfaceView
 import android.widget.Toast
@@ -157,6 +159,7 @@ fun PlayerScreen(
     onPictureChange: (boost: Float, autoHdr: Boolean) -> Unit,
     hdrMode: Int = HdrMode.AUTO,
     onHdrMode: (Int) -> Unit = {},
+    threeD: ThreeDUi? = null,
 ) {
     val player = state.player
     val activity = LocalContext.current as Activity
@@ -174,6 +177,7 @@ fun PlayerScreen(
     var dragging by remember { mutableStateOf(false) }
     var scrubbing by remember { mutableStateOf(false) }
     var scrubValue by remember { mutableFloatStateOf(0f) }
+    var padAwake by remember { mutableStateOf(false) }
 
     fun flash(text: String) {
         label = text
@@ -362,6 +366,9 @@ fun PlayerScreen(
                 }
             },
             update = { view ->
+                // On glasses the video is drawn there; this view lets go of the player.
+                val wanted = if (threeD?.glassesActive == true) null else player
+                if (view.player !== wanted) view.player = wanted
                 view.resizeMode = resizeMode
                 applyGeometry(view)
                 view.subtitleView?.apply {
@@ -589,6 +596,10 @@ fun PlayerScreen(
                     }
                     BarIcon(Icons.Filled.ClosedCaption, "Subtitles") { panel = PanelTab.SUBTITLES }
                     BarIcon(Icons.Filled.Audiotrack, "Audio") { panel = PanelTab.AUDIO }
+                    if (threeD != null) {
+                        BarIcon(Icons.Filled.ViewInAr, "3D") { panel = PanelTab.VIDEO }
+                        if (!BuildConfig.TV) BarIcon(Icons.Filled.DarkMode, "Turn the screen black") { threeD.onScreenOff(true) }
+                    }
                     BarIcon(Icons.Filled.Tune, "Video settings") { panel = PanelTab.VIDEO }
                     BarIcon(Icons.Filled.PictureInPictureAlt, "Picture in picture", onPip)
                 }
@@ -820,6 +831,7 @@ fun PlayerScreen(
                                 onExport = onExport,
                                 hdrMode = hdrMode,
                                 onHdrMode = onHdrMode,
+                                threeD = threeD,
                             )
                         }
                     }
@@ -845,8 +857,20 @@ fun PlayerScreen(
                 }
             }
         }
-    }
 
+        // Black touch pad: video on the glasses, or the screen turned black. Holding wakes it;
+        // with glasses the controls then show over black and the pad returns when they hide.
+        if (threeD != null && threeD.blackout && !padAwake && !inPip) {
+            TouchPad(threeD, player, audio) {
+                if (threeD.screenOff) threeD.onScreenOff(false) else padAwake = true
+                controls = true
+                poke()
+            }
+        }
+    }
+    LaunchedEffect(controls, panel, threeD?.glassesActive) {
+        if (!controls && panel == null) padAwake = false
+    }
 }
 
 /**
@@ -1092,9 +1116,11 @@ private fun VideoTab(
     onExport: () -> Unit,
     hdrMode: Int,
     onHdrMode: (Int) -> Unit,
+    threeD: ThreeDUi?,
 ) {
     val player = state.player
     Column {
+        if (threeD != null) ThreeDSection(threeD)
         HdrOutputSection(state, hdrMode, onHdrMode)
 
         PanelHeading("Scaling")
@@ -1164,7 +1190,7 @@ private fun VideoTab(
                     false -> "SDR pipeline"
                 }
                 pictureStatus = when {
-                    !memcAvailable -> "Not available for this video"
+                    !memcAvailable -> "Off while 3D is on (or not available for this video)"
                     picture.fakedHdr -> "Auto HDR · SDR white at ${picture.sdrWhiteNits.roundToInt()} nits, highlights up to ${picture.sdrPeakNits.roundToInt()}"
                     hdrVideo && picture.boost > 0f -> "HDR video · brightness ×${String.format(java.util.Locale.US, "%.1f", 1f + 0.8f * picture.boost)} (soft roll-off at the top)"
                     picture.boost > 0f -> "SDR video · brighter picture and backlight raised"

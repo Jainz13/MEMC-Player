@@ -28,6 +28,10 @@ import com.jainz.memc.memc.MemcControl
 import com.jainz.memc.memc.MemcEffect
 import com.jainz.memc.memc.NpuFlow
 import com.jainz.memc.memc.PictureControl
+import com.jainz.memc.stereo.DepthModel
+import com.jainz.memc.stereo.NpuDepth
+import com.jainz.memc.stereo.StereoControl
+import com.jainz.memc.stereo.StereoEffect
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
@@ -93,10 +97,13 @@ class PlayerActivity : ComponentActivity() {
         // HDR output chosen in the player for this session, else the Settings default.
         hdrMode = intent.getIntExtra(EXTRA_HDR_MODE, g.settings.hdrMode.value)
         if (hdrMode == HdrMode.SDR && !HdrMode.sdrSupported) hdrMode = HdrMode.HDR10
+        // 3D for this session (picked in the player): smooth motion off, Auto HDR on.
+        stereoMode = intent.getIntExtra(EXTRA_STEREO, StereoControl.OFF)
+        val threeDOn = stereoMode != StereoControl.OFF
         picture = PictureControl(
             // Without the effect pipeline nothing may be flagged as HDR, or SDR colours would be wrong.
             boost = if (memcAllowed) g.settings.hdrBoost.value / 100f else 0f,
-            autoHdr = g.settings.autoHdr.value && memcAllowed && hdrMode != HdrMode.SDR &&
+            autoHdr = (threeDOn || g.settings.autoHdr.value && memcAllowed) && hdrMode != HdrMode.SDR &&
                 !intent.getBooleanExtra(EXTRA_NO_AUTO_HDR, false),
         )
         player = PlayerFactory.create(this, g.smb, g.settings, picture, hdrMode)
@@ -107,6 +114,25 @@ class PlayerActivity : ComponentActivity() {
             quality = g.settings.memcQuality.value,
         )
         if (BuildConfig.TV) memc.enabled = false
+        if (threeDOn) {
+            memc.enabled = false
+            stereo = StereoControl(stereoMode).apply {
+                strength = g.settings.stereoStrength.value / 100f
+                swapEyes = g.settings.stereoSwap.value
+            }
+        }
+        threeD = ThreeDUi(
+            mode = stereoMode,
+            stereo = stereo,
+            onMode = { changeStereo(it) },
+            onStrength = { g.settings.stereoStrength.set((it * 100).toInt()) },
+            onSwap = { g.settings.stereoSwap.set(it) },
+            onScreenOff = { setScreenOff(it) },
+            onDownloadModel = { downloadDepthModel() },
+        ).apply {
+            canUseAi = !BuildConfig.TV && NpuFlow.isSnapdragon
+            modelState = if (!canUseAi || DepthModel.ready(this@PlayerActivity)) "" else "missing"
+        }
         // Frames are processed no larger than the screen: a 4K film on this panel is shown at
         // the panel's resolution anyway, and it cuts the GPU work by more than half.
         memc.maxLongSide = screenLongSide()
@@ -115,7 +141,13 @@ class PlayerActivity : ComponentActivity() {
         startNpuIfWanted()
         // Only build the effect pipeline when something needs it, so plain playback keeps the
         // direct HDR10+ path to the display.
-        if (memcAllowed && (memc.enabled || picture.boost > 0f || picture.autoHdr)) installMemc()
+        if (stereo != null) {
+            installStereo()
+            startDepthIfWanted()
+            if (!BuildConfig.TV) {
+                glasses = GlassesOutput(this, onSurface = { moveVideoTo(it) }, onInfo = { threeD.glassesInfo = it }).also { it.start() }
+            }
+        } else if (memcAllowed && (memc.enabled || picture.boost > 0f || picture.autoHdr)) installMemc()
         applyBoostBacklight()
         player.addAnalyticsListener(object : AnalyticsListener {
             // The player reports every 50 late frames it had to drop. Faster than ~4 a second
@@ -138,7 +170,7 @@ class PlayerActivity : ComponentActivity() {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (isPlaying) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 else {
-                    if (!state.prebuffering) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    if (!state.prebuffering && !threeD.blackout) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                     saveProgress()
                     fillBufferWhilePaused()
                 }
@@ -238,13 +270,14 @@ class PlayerActivity : ComponentActivity() {
                     onBack = { finish() },
                     onPip = { enterPip() },
                     memc = memc,
-                    memcAvailable = memcAllowed,
+                    memcAvailable = memcAllowed && stereo == null,
                     onMemcChange = { enabled, fps, quality -> updateMemc(enabled, fps, quality) },
                     picture = picture,
                     onPictureChange = { boost, autoHdr -> updatePicture(boost, autoHdr) },
                     onExport = { exportCurrent() },
                     hdrMode = hdrMode,
                     onHdrMode = { changeHdrMode(it) },
+                    threeD = threeD,
                     onPlayerView = { view ->
                         playerView = view
                         DebugRecorder.videoSurface = WeakReference(view.videoSurfaceView as? SurfaceView)
@@ -408,6 +441,9 @@ class PlayerActivity : ComponentActivity() {
             append(" | memc installed=$memcInstalled enabled=${memc.enabled} active=${memc.active} target=${memc.targetFps} quality=${memc.quality}")
             append(" ease=${memc.easeLevel} heat=${memc.thermalLevel} source=${memc.sourceFps}fps work=${memc.procWidth}x${memc.procHeight}")
             append(" buffer=${memc.bufferedFrames}/${memc.bufferFrames} npu=\"${memc.npuStatus}\"")
+            stereo?.let { st ->
+                append(" | 3d mode=${st.mode} out=${st.outWidth}x${st.outHeight} depth=${(st.strength * 100).toInt()}% maps/s=${"%.1f".format(java.util.Locale.US, st.depthRate)} hot=${st.hot} \"${st.status}\" glasses=${threeD.glassesActive} black=${threeD.screenOff}")
+            }
             append(" | picture boost=${picture.boost} autoHdr=${picture.autoHdr} convertSdr=${picture.convertSdr} fakedHdr=${picture.fakedHdr}")
             append(" pipelineHdr=${picture.pipelineHdr} shaderMode=${picture.lastMode}")
             append(" | window brightness=${window.attributes.screenBrightness} colorMode=${if (Build.VERSION.SDK_INT >= 26) window.colorMode else 0}")
@@ -498,6 +534,114 @@ class PlayerActivity : ComponentActivity() {
      * One effect does picture adjustments and frame interpolation. Media3 can only create the
      * effect pipeline when playback starts, so this must run before the video is prepared.
      */
+    // ---- 3D -------------------------------------------------------------------------------
+
+    private var stereoMode = StereoControl.OFF
+    private var stereo: StereoControl? = null
+    private lateinit var threeD: ThreeDUi
+    private var glasses: GlassesOutput? = null
+    private var glassesSurface: SurfaceView? = null
+    private var depthNpu: NpuDepth? = null
+    private var depthStarting = false
+
+    /** 3D: picture stage (Auto HDR) then the side-by-side stage; smooth motion stays off. */
+    private fun installStereo() {
+        val s = stereo ?: return
+        player.setVideoEffects(listOf(MemcEffect(memc, picture), StereoEffect(s)))
+        memcInstalled = true
+        DebugRecorder.event("3d", "3D on: mode ${s.mode}, depth ${(s.strength * 100).toInt()}%, Auto HDR ${picture.autoHdr}")
+    }
+
+    private fun changeStereo(mode: Int) {
+        if (mode == stereoMode) return
+        DebugRecorder.event("3d", "3D mode $stereoMode -> $mode")
+        intent.putExtra(EXTRA_STEREO, mode)
+        restartAtPosition()
+    }
+
+    /** Video to the glasses (a surface on the external display) or back to the phone (null). */
+    private fun moveVideoTo(surface: SurfaceView?) {
+        glassesSurface?.let { player.clearVideoSurfaceView(it) }
+        glassesSurface = surface
+        if (surface != null) player.setVideoSurfaceView(surface)
+        threeD.glassesActive = surface != null
+        applyBlackout()
+        DebugRecorder.event("glasses", if (surface != null) "Video moved to the external display" else "Video back on the phone")
+    }
+
+    private fun setScreenOff(on: Boolean) {
+        threeD.screenOff = on
+        applyBlackout()
+    }
+
+    /** Black touch pad: lowest backlight and the screen kept on (Android would otherwise sleep). */
+    private fun applyBlackout() {
+        val dark = threeD.blackout
+        val lp = window.attributes
+        if (dark) {
+            lp.screenBrightness = 0f
+            window.attributes = lp
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            window.attributes = lp
+            applyBoostBacklight()
+            if (!player.isPlaying) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    /** AI depth on the NPU for 2D-to-3D (phone, Snapdragon, model downloaded). */
+    private fun startDepthIfWanted() {
+        val s = stereo ?: return
+        if (s.mode != StereoControl.CONVERT || BuildConfig.TV || !NpuFlow.isSnapdragon) return
+        if (!DepthModel.ready(this) || depthNpu != null || depthStarting) return
+        if (com.jainz.memc.core.Compat.thermalStatus(this) >= 2) {
+            s.status = "AI 3D waits for the phone to cool down - using picture cues"
+            return
+        }
+        depthStarting = true
+        s.status = "Preparing AI 3D (the first time can take a minute)…"
+        val appContext = applicationContext
+        g.scope.launch(Dispatchers.Default) {
+            val result = runCatching { NpuDepth.create(appContext) }
+            withContext(Dispatchers.Main) {
+                depthStarting = false
+                result.onSuccess { n ->
+                    if (isDestroyed) {
+                        n.close()
+                    } else {
+                        depthNpu = n
+                        s.npu = n
+                        DebugRecorder.event("3d", "AI depth model running on the NPU")
+                    }
+                }.onFailure { e ->
+                    s.status = "AI 3D unavailable (${(e.message ?: e.javaClass.simpleName).take(120)}) - using picture cues"
+                    DebugRecorder.event("3d", s.status)
+                }
+            }
+        }
+    }
+
+    private fun downloadDepthModel() {
+        if (threeD.modelProgress >= 0f) return
+        threeD.modelProgress = 0f
+        lifecycleScope.launch {
+            val r = runCatching {
+                DepthModel.download(applicationContext) { done, total ->
+                    threeD.modelProgress = if (total > 0) done.toFloat() / total else 0f
+                }
+            }
+            threeD.modelProgress = -1f
+            r.onSuccess {
+                threeD.modelState = ""
+                startDepthIfWanted()
+            }.onFailure { e ->
+                threeD.modelState = "missing"
+                Toast.makeText(this@PlayerActivity, "AI 3D download failed: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     private fun installMemc() {
         if (memcInstalled) return
         player.setVideoEffects(listOf(MemcEffect(memc, picture)))
@@ -603,6 +747,7 @@ class PlayerActivity : ComponentActivity() {
     private fun watchHeat() {
         memc.thermalLevel = com.jainz.memc.core.Compat.thermalStatus(this)
         thermalListener = com.jainz.memc.core.Compat.watchHeat(this) { status ->
+            stereo?.hot = status >= 2
             val before = memc.thermalLevel
             memc.thermalLevel = status
             DebugRecorder.event("player", "Heat level $before -> $status")
@@ -898,8 +1043,19 @@ class PlayerActivity : ComponentActivity() {
         com.jainz.memc.core.Compat.unwatchHeat(this, thermalListener)
         saveProgress()
         saver?.cancel()
+        glasses?.stop()
+        glasses = null
         state.release()
         player.release()
+        // Like the motion model: closed a moment later, once the render thread is done with it.
+        stereo?.npu = null
+        depthNpu?.let { n ->
+            depthNpu = null
+            g.scope.launch {
+                delay(2500)
+                n.close()
+            }
+        }
         // Close the AI model a moment later, once the render thread has certainly stopped using it.
         memc.npu = null
         npuLive?.let { n ->
@@ -919,6 +1075,7 @@ class PlayerActivity : ComponentActivity() {
         const val EXTRA_FROM_START = "from_start"
         const val EXTRA_NO_MEMC = "no_memc"
         const val EXTRA_HDR_MODE = "hdr_mode"
+        const val EXTRA_STEREO = "stereo"
         const val EXTRA_START_MS = "start_ms"
         const val EXTRA_NO_AUTO_HDR = "no_auto_hdr"
     }

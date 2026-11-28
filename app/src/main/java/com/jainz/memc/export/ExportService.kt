@@ -71,6 +71,11 @@ class ExportService : Service() {
     private var speedAt = 0L
     private var speedFrames = 0L
     private var speedText: String? = null
+    /** Output frames counter at the start of this export, and how many the whole video gives. */
+    private var framesBase = 0L
+    private var framesTotal = 0L
+    private var lastFps = 0.0
+    private var lastStatsAt = 0L
     private var heatListener: Any? = null
     private var exportControl: MemcControl? = null
 
@@ -129,6 +134,12 @@ class ExportService : Service() {
         ExportManager.update(job.id) {
             speedAt = 0L
             speedText = null
+            lastFps = 0.0
+            lastStatsAt = 0L
+            framesBase = PerfStats.framesOut.get()
+            framesTotal = 0L
+            PerfStats.reset()
+            PerfStats.sample(this)
             DebugRecorder.event("export", "Export started: ${it.title}")
             it.copy(status = ExportStatus.RUNNING, progress = 0, message = null, startedAt = System.currentTimeMillis())
         }
@@ -166,6 +177,11 @@ class ExportService : Service() {
         com.jainz.memc.core.Compat.unwatchHeat(this, heatListener)
         control.thermalLevel = minOf(com.jainz.memc.core.Compat.thermalStatus(this), 2)
         heatListener = com.jainz.memc.core.Compat.watchHeat(this) { control.thermalLevel = minOf(it, 2) }
+        // Length of the video, for frames-based progress (Transformer's % moves very slowly).
+        g.scope.launch {
+            val d = runCatching { g.db.videos().byUri(job.sourceUri)?.durationMs }.getOrNull() ?: 0L
+            if (d > 0 && currentId == job.id) framesTotal = d * 60 / 1000
+        }
         val effect = MemcEffect(control)
         // Same colour fix as playback, so HDR files missing container colour info export as HDR10.
         val extractors = ColorFixExtractorsFactory(
@@ -255,11 +271,52 @@ class ExportService : Service() {
                             "$p% · $speedText · heat=${exportControl?.thermalLevel} · ${exportControl?.npuStatus}",
                         )
                     }
-                    ExportManager.update(currentId) { it.copy(progress = p, message = speedText) }
+                    if (now - lastStatsAt >= 2000) {
+                        lastStatsAt = now
+                        val sample = PerfStats.sample(this@ExportService)
+                        val done = frames - framesBase
+                        val started = ExportManager.get(currentId)?.startedAt ?: now
+                        val elapsed = now - started
+                        val fps = if (sample != null && sample.fps > 0) {
+                            // Smoothed over the last samples so the figure doesn't jump around.
+                            if (lastFps <= 0) sample.fps.toDouble() else lastFps * 0.7 + sample.fps * 0.3
+                        } else lastFps
+                        lastFps = fps
+                        val left = when {
+                            framesTotal > 0 && fps > 0.5 -> ((framesTotal - done).coerceAtLeast(0) / fps * 1000).toLong()
+                            p in 1..99 -> elapsed * (100 - p) / p
+                            else -> -1L
+                        }
+                        val temps = com.jainz.memc.core.SystemTemps.read(this@ExportService)
+                        val npuStatus = exportControl?.npuStatus.orEmpty()
+                        val stats = ExportStats(
+                            fps = fps, framesDone = done, framesTotal = framesTotal, elapsedMs = elapsed, leftMs = left,
+                            cpuPercent = sample?.cpuPercent ?: 0, gpuPercent = sample?.gpuPercent ?: -1,
+                            npuPercent = sample?.npuPercent ?: 0, npuMsPerPass = sample?.npuMsPerPass ?: 0,
+                            engine = if (npuStatus.startsWith("AI on")) "AI on the NPU" else if (npuStatus.isNotBlank()) "GPU engine ($npuStatus)" else "GPU engine",
+                            temps = temps,
+                        )
+                        ExportManager.update(currentId) { it.copy(stats = stats) }
+                        if (now - speedAt < 2500) {
+                            DebugRecorder.event("export", "temps: ${temps.summary()} · CPU ${stats.cpuPercent}% GPU ${stats.gpuPercent}% NPU ${stats.npuPercent}%")
+                        }
+                    }
+                    val frac = ExportManager.get(currentId)?.stats?.let { s ->
+                        if (s.framesTotal > 0) (s.framesDone * 1000 / s.framesTotal).toInt() else -1
+                    } ?: -1
+                    ExportManager.update(currentId) { it.copy(progress = if (frac >= 0) maxOf(p, frac / 10) else p, message = speedText) }
                     val title = ExportManager.get(currentId)?.title ?: "video"
+                    val st = ExportManager.get(currentId)?.stats
                     runCatching {
                         getSystemService(NotificationManager::class.java)
-                            .notify(NOTIFICATION_ID, progressNotification("Exporting $title at 60 fps", p))
+                            .notify(
+                                NOTIFICATION_ID,
+                                progressNotification(
+                                    "Exporting $title at 60 fps" + (st?.let { " · %.1f fps".format(java.util.Locale.US, it.fps) } ?: ""),
+                                    if (frac >= 0) maxOf(p, frac / 10) else p,
+                                    st?.temps?.summary(),
+                                ),
+                            )
                     }
                 }
                 handler.postDelayed(this, 1000)
@@ -360,10 +417,11 @@ class ExportService : Service() {
         PendingIntent.FLAG_IMMUTABLE,
     )
 
-    private fun progressNotification(text: String, percent: Int) = NotificationCompat.Builder(this, channel())
+    private fun progressNotification(text: String, percent: Int, detail: String? = null) = NotificationCompat.Builder(this, channel())
         .setSmallIcon(R.drawable.ic_stat_memc)
         .setContentTitle("MEMC Player")
         .setContentText(text)
+        .apply { if (!detail.isNullOrBlank()) setStyle(NotificationCompat.BigTextStyle().bigText("$text\n$detail")) }
         .setOnlyAlertOnce(true)
         .setOngoing(true)
         .setContentIntent(openAppIntent())

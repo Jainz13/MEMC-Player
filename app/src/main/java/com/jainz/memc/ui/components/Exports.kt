@@ -5,7 +5,9 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -79,7 +81,7 @@ private fun ExportRow(job: ExportJob) {
                 ExportStatus.QUEUED -> "Waiting"
                 ExportStatus.RUNNING -> if (job.progress >= 0) {
                     val elapsedMin = (System.currentTimeMillis() - job.startedAt) / 60000.0
-                    val left = if (job.progress >= 2 && job.startedAt > 0) {
+                    val left = if (job.stats == null && job.progress >= 2 && job.startedAt > 0) {
                         val m = elapsedMin * (100 - job.progress) / job.progress
                         if (m >= 90) " · about ${(m / 60).toInt()} h ${(m % 60).toInt()} min left" else " · about ${m.toInt() + 1} min left"
                     } else ""
@@ -90,7 +92,7 @@ private fun ExportRow(job: ExportJob) {
                 ExportStatus.CANCELLED -> "Cancelled"
             }
             Text(
-                listOfNotNull(statusText, job.message).joinToString(" · "),
+                listOfNotNull(statusText, job.message.takeIf { job.stats == null }).joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall,
                 color = when (job.status) {
                     ExportStatus.FAILED -> Palette.Danger
@@ -98,6 +100,7 @@ private fun ExportRow(job: ExportJob) {
                     else -> Palette.TextDim
                 },
             )
+            if (job.status == ExportStatus.RUNNING) job.stats?.let { ExportStatsGrid(it) }
             if (job.status == ExportStatus.RUNNING) {
                 if (job.progress >= 0) {
                     LinearProgressIndicator(
@@ -120,6 +123,58 @@ private fun ExportRow(job: ExportJob) {
                     ExportStatus.FAILED, ExportStatus.CANCELLED ->
                         TextButton(onClick = { ExportManager.retry(context, job.id) }) { Text("Try again") }
                 }
+            }
+        }
+    }
+}
+
+
+private fun clock(ms: Long): String {
+    if (ms < 0) return "…"
+    val m = ms / 60_000
+    return if (m >= 60) "${m / 60} h ${m % 60} min" else if (m >= 1) "$m min" else "${ms / 1000} s"
+}
+
+/** Live export figures: speed, time, the work each chip is doing and how hot the phone is. */
+@Composable
+private fun ExportStatsGrid(s: com.jainz.memc.export.ExportStats) {
+    val us = java.util.Locale.US
+    val t = s.temps
+    val rows = listOf(
+        "Speed" to "%.1f fps · %.2f× real time".format(us, s.fps, s.speedX),
+        "Time" to "${clock(s.elapsedMs)} done · ${clock(s.leftMs)} left",
+        "Frames" to if (s.framesTotal > 0) "%,d of %,d (%.1f%%)".format(us, s.framesDone, s.framesTotal, s.framesDone * 100.0 / s.framesTotal)
+        else "%,d".format(us, s.framesDone),
+        "Engine" to s.engine,
+        "Load" to listOfNotNull(
+            "CPU ${s.cpuPercent}%",
+            if (s.gpuPercent >= 0) "GPU ${s.gpuPercent}%" else null,
+            if (s.npuPercent > 0) "NPU ${s.npuPercent}%" + (if (s.npuMsPerPass > 0) " (${s.npuMsPerPass} ms/pass)" else "") else null,
+        ).joinToString(" · "),
+        "Heat" to listOfNotNull(
+            t.batteryC?.let { "Battery %.1f °C".format(us, it) },
+            t.cpuC?.let { "CPU %.0f °C".format(us, it) },
+            t.gpuC?.let { "GPU %.0f °C".format(us, it) },
+        ).joinToString(" · ").ifBlank { "—" },
+        "Throttling" to listOfNotNull(
+            t.status,
+            t.headroomPercent?.let { "$it% of the way to slowing down" },
+        ).joinToString(" · "),
+    )
+    Column(
+        Modifier.fillMaxWidth()
+            .background(Palette.SurfaceHigh, RoundedCornerShape(10.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        rows.forEach { (k, v) ->
+            Row {
+                Text(k, style = MaterialTheme.typography.labelSmall, color = Palette.TextFaint, modifier = Modifier.width(78.dp))
+                Text(
+                    v,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (k == "Throttling" && (t.headroomPercent ?: 0) >= 90) Palette.Danger else Palette.TextDim,
+                )
             }
         }
     }

@@ -1,0 +1,368 @@
+package com.jainz.memc.stereo
+
+import android.content.Context
+import android.opengl.GLES20
+import android.opengl.GLES30
+import androidx.media3.common.VideoFrameProcessingException
+import androidx.media3.common.util.GlProgram
+import androidx.media3.common.util.GlUtil
+import androidx.media3.common.util.Size
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.BaseGlShaderProgram
+import androidx.media3.effect.GlEffect
+import androidx.media3.effect.GlShaderProgram
+import com.jainz.memc.core.DebugRecorder
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
+
+/** Media3 video effect that turns each frame into a side-by-side 3D frame. */
+@UnstableApi
+class StereoEffect(private val control: StereoControl) : GlEffect {
+    override fun toGlShaderProgram(context: Context, useHdr: Boolean): GlShaderProgram =
+        try {
+            StereoShaderProgram(context, useHdr, control)
+        } catch (e: Exception) {
+            throw VideoFrameProcessingException(e)
+        }
+}
+
+/**
+ * Renders the side-by-side frame. For 2D-to-3D it keeps a depth map of the picture: from the
+ * AI model on the NPU when available (refreshed about 12 times a second on a worker thread,
+ * so the video never waits for it), otherwise from simple picture cues on the GPU. The map is
+ * smoothed over time so it doesn't flicker, and every frame is shifted by it for each eye.
+ */
+@UnstableApi
+private class StereoShaderProgram(
+    context: Context,
+    private val useHdr: Boolean,
+    private val control: StereoControl,
+) : BaseGlShaderProgram(/* useHighPrecisionColorComponents= */ useHdr, /* texturePoolCapacity= */ 2) {
+
+    private val sbsProgram = program(context, "stereo/sbs.frag")
+    private val smoothProgram = program(context, "stereo/depth_smooth.frag")
+    private val heuristicProgram = program(context, "stereo/heuristic_depth.frag")
+    private val smallProgram = program(context, "memc/npu_small.frag")
+
+    private var outW = 0
+    private var outH = 0
+
+    // Depth resources (2D to 3D only)
+    private var smallW = 0
+    private var smallH = 0
+    private var smallTex = 0
+    private var smallFbo = 0
+    private var rawTex = 0
+    private var rawFbo = 0
+    private val smoothTex = IntArray(2)
+    private val smoothFbo = IntArray(2)
+    private var smoothIndex = 0
+    private var depthW = 0
+    private var depthH = 0
+    private var haveDepth = false
+    private var lastPts = Long.MIN_VALUE
+
+    // AI depth on a worker thread
+    private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "memc-depth").apply { priority = Thread.NORM_PRIORITY - 1 } }
+    private val busy = AtomicBoolean(false)
+    private val result = AtomicReference<FloatArray?>(null)
+    private var pixels: ByteBuffer? = null
+    private var lastDepthPts = Long.MIN_VALUE
+    private var aiFailed = false
+    private var depthCount = 0
+    private var depthCountAt = 0L
+
+    /**
+     * Half-float colour targets (all recent phones; some TV boxes lack them). Without them the
+     * depth maps are 8-bit, which is plenty for the picture-cue depth used there.
+     */
+    private val halfFloat: Boolean = runCatching {
+        val ext = GLES20.glGetString(GLES20.GL_EXTENSIONS).orEmpty()
+        ext.contains("GL_EXT_color_buffer_half_float") || ext.contains("GL_EXT_color_buffer_float")
+    }.getOrDefault(false)
+
+    private val saved = IntArray(4)
+    private val savedFbo = IntArray(1)
+
+    override fun configure(inputWidth: Int, inputHeight: Int): Size {
+        when (control.mode) {
+            StereoControl.SBS -> {
+                val s = min(1f, 3840f / inputWidth)
+                outW = even(inputWidth * s)
+                outH = even(inputHeight * s)
+            }
+            StereoControl.HALF_SBS -> {
+                val s = min(1f, 3840f / (inputWidth * 2f))
+                outW = even(inputWidth * 2f * s)
+                outH = even(inputHeight * s)
+            }
+            else -> {
+                // Each eye fits 1920x1080 (the glasses' resolution per eye).
+                val s = min(1f, min(1920f / inputWidth, 1080f / inputHeight))
+                val eyeW = even(inputWidth * s)
+                outW = eyeW * 2
+                outH = even(inputHeight * s)
+                setUpDepth()
+            }
+        }
+        control.outWidth = outW
+        control.outHeight = outH
+        DebugRecorder.event("3d", "3D output ${outW}x$outH from ${inputWidth}x$inputHeight (mode ${control.mode}, HDR $useHdr)")
+        return Size(outW, outH)
+    }
+
+    private fun setUpDepth(ai: Boolean = control.npu != null && !aiFailed && !control.hot) {
+        val w = if (ai) DepthModel.WIDTH else 192
+        val h = if (ai) DepthModel.HEIGHT else 108
+        if (w == smallW && h == smallH && smallTex != 0) return
+        releaseDepth()
+        smallW = w
+        smallH = h
+        smallTex = GlUtil.createTexture(w, h, false)
+        smallFbo = GlUtil.createFboForTexture(smallTex)
+        depthW = w
+        depthH = h
+        rawTex = floatTexture(w, h)
+        rawFbo = GlUtil.createFboForTexture(rawTex)
+        for (i in 0..1) {
+            smoothTex[i] = floatTexture(w, h)
+            smoothFbo[i] = GlUtil.createFboForTexture(smoothTex[i])
+        }
+        pixels = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
+        haveDepth = false
+    }
+
+    override fun drawFrame(inputTexId: Int, presentationTimeUs: Long) {
+        try {
+            GLES20.glGetIntegerv(GLES20.GL_FRAMEBUFFER_BINDING, savedFbo, 0)
+            GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, saved, 0)
+            val convert = control.mode == StereoControl.CONVERT
+            if (convert) updateDepth(inputTexId, presentationTimeUs)
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, savedFbo[0])
+            GLES20.glViewport(saved[0], saved[1], saved[2], saved[3])
+            sbsProgram.use()
+            sbsProgram.setSamplerTexIdUniform("uSrc", inputTexId, 0)
+            sbsProgram.setSamplerTexIdUniform("uDepth", if (convert) smoothTex[smoothIndex] else inputTexId, 1)
+            sbsProgram.setIntUniform(
+                "uMode",
+                when (control.mode) {
+                    StereoControl.HALF_SBS -> 1
+                    StereoControl.SBS -> 2
+                    else -> 0
+                },
+            )
+            sbsProgram.setFloatUniform("uStrength", StereoControl.MAX_SHIFT * 2f * control.strength.coerceIn(0f, 1f))
+            sbsProgram.setFloatUniform("uConv", control.convergence.coerceIn(0f, 1f))
+            sbsProgram.setIntUniform("uSwap", if (control.swapEyes) 1 else 0)
+            sbsProgram.bindAttributesAndUniforms()
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            GlUtil.checkGlError()
+        } catch (e: GlUtil.GlException) {
+            throw VideoFrameProcessingException(e, presentationTimeUs)
+        }
+    }
+
+    private fun updateDepth(inputTexId: Int, pts: Long) {
+        // A seek or a jump: start the depth map over instead of blending across it.
+        val jumped = lastPts != Long.MIN_VALUE && (pts < lastPts || pts - lastPts > 1_000_000)
+        lastPts = pts
+        val npu = control.npu?.takeIf { !aiFailed && !control.hot && halfFloat }
+        if ((npu != null) != (smallW == DepthModel.WIDTH)) setUpDepth(npu != null)
+
+        // Small copy of the frame (0..1 RGB, HDR compressed) for either depth method.
+        focus(smallFbo, smallW, smallH)
+        smallProgram.use()
+        smallProgram.setSamplerTexIdUniform("uTex", inputTexId, 0)
+        smallProgram.setIntUniform("uHdr", if (useHdr) 1 else 0)
+        smallProgram.setFloatUniform("uStore", if (useHdr) HDR_STORE else 1f)
+        smallProgram.bindAttributesAndUniforms()
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+        var fresh = false
+        var mix = 0.15f
+        if (npu != null) {
+            // Take a finished depth map, if one is waiting.
+            result.getAndSet(null)?.let { depth ->
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, rawTex)
+                GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, depthW, depthH, GLES30.GL_RED, GLES20.GL_FLOAT, java.nio.FloatBuffer.wrap(depth))
+                fresh = true
+                mix = 0.55f
+                countDepth()
+            }
+            // Start the next one: about 12 a second of video, never more than one at a time.
+            val due = lastDepthPts == Long.MIN_VALUE || jumped || pts - lastDepthPts >= DEPTH_INTERVAL_US
+            if (due && busy.compareAndSet(false, true)) {
+                lastDepthPts = pts
+                val buf = pixels!!
+                buf.clear()
+                GLES20.glReadPixels(0, 0, smallW, smallH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+                fillModelInput(buf, npu)
+                worker.execute { runModel(npu) }
+            }
+        } else {
+            // GPU cues, every frame.
+            focus(rawFbo, depthW, depthH)
+            heuristicProgram.use()
+            heuristicProgram.setSamplerTexIdUniform("uTex", smallTex, 0)
+            heuristicProgram.setFloatsUniform("uTexel", floatArrayOf(1f / smallW, 1f / smallH))
+            heuristicProgram.bindAttributesAndUniforms()
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            fresh = true
+            countDepth()
+            control.status = "3D from picture cues (GPU)"
+        }
+        if (!fresh && haveDepth && !jumped) return
+        if (!fresh && !haveDepth) {
+            // No depth yet (AI still working on the first one): flat until it arrives.
+            return clearSmooth()
+        }
+        val next = 1 - smoothIndex
+        focus(smoothFbo[next], depthW, depthH)
+        smoothProgram.use()
+        smoothProgram.setSamplerTexIdUniform("uNew", rawTex, 0)
+        smoothProgram.setSamplerTexIdUniform("uPrev", smoothTex[smoothIndex], 1)
+        smoothProgram.setFloatsUniform("uTexel", floatArrayOf(1f / depthW, 1f / depthH))
+        smoothProgram.setFloatUniform("uMix", if (!haveDepth || jumped) 1f else mix)
+        smoothProgram.bindAttributesAndUniforms()
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        smoothIndex = next
+        haveDepth = true
+    }
+
+    private fun clearSmooth() {
+        for (i in 0..1) {
+            focus(smoothFbo[i], depthW, depthH)
+            GLES20.glClearColor(control.convergence, 0f, 0f, 1f)
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        }
+        GLES20.glClearColor(0f, 0f, 0f, 0f)
+    }
+
+    /** RGBA bytes (bottom row first) -> the model's planar, normalised input (top row first). */
+    private fun fillModelInput(buf: ByteBuffer, npu: NpuDepth) {
+        val w = smallW
+        val h = smallH
+        val plane = w * h
+        val input = npu.input
+        val arr = modelInput ?: FloatArray(3 * plane).also { modelInput = it }
+        for (y in 0 until h) {
+            val srcRow = (h - 1 - y) * w * 4
+            val dst = y * w
+            for (x in 0 until w) {
+                val i = srcRow + x * 4
+                val o = dst + x
+                arr[o] = ((buf.get(i).toInt() and 0xFF) / 255f - 0.485f) / 0.229f
+                arr[plane + o] = ((buf.get(i + 1).toInt() and 0xFF) / 255f - 0.456f) / 0.224f
+                arr[2 * plane + o] = ((buf.get(i + 2).toInt() and 0xFF) / 255f - 0.406f) / 0.225f
+            }
+        }
+        synchronized(npu) {
+            input.clear()
+            input.put(arr)
+            input.rewind()
+        }
+    }
+
+    private var modelInput: FloatArray? = null
+
+    /** Worker thread: run the model, scale to 0..1 (1 = near), flip back to bottom-row-first. */
+    private fun runModel(npu: NpuDepth) {
+        try {
+            val out = synchronized(npu) { npu.run() }
+            val w = npu.width
+            val h = npu.height
+            val plane = w * h
+            val raw = FloatArray(plane)
+            out.get(raw, 0, plane)
+            // Robust range: ignore the extreme 1% at each end so one bright speck doesn't flatten the rest.
+            val sample = FloatArray(plane / 16) { raw[it * 16] }
+            sample.sort()
+            val lo = sample[(sample.size * 0.01f).toInt()]
+            val hi = sample[(sample.size * 0.99f).toInt().coerceAtMost(sample.size - 1)]
+            val scale = if (hi - lo > 1e-6f) 1f / (hi - lo) else 0f
+            val depth = FloatArray(plane)
+            for (y in 0 until h) {
+                val src = y * w
+                val dst = (h - 1 - y) * w
+                for (x in 0 until w) depth[dst + x] = ((raw[src + x] - lo) * scale).coerceIn(0f, 1f)
+            }
+            result.set(depth)
+            control.status = "AI 3D on the NPU, ${npu.averageMs.roundToInt()} ms per depth map"
+        } catch (e: Throwable) {
+            aiFailed = true
+            control.status = "AI 3D stopped (${e.message ?: e.javaClass.simpleName}) - using picture cues"
+            DebugRecorder.event("3d", control.status)
+        } finally {
+            busy.set(false)
+        }
+    }
+
+    private fun countDepth() {
+        depthCount++
+        val now = System.nanoTime()
+        if (depthCountAt == 0L) depthCountAt = now
+        val dt = now - depthCountAt
+        if (dt >= 2_000_000_000L) {
+            control.depthRate = depthCount * 1e9f / dt
+            depthCount = 0
+            depthCountAt = now
+        }
+    }
+
+    private fun focus(fbo: Int, w: Int, h: Int) {
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo)
+        GLES20.glViewport(0, 0, w, h)
+    }
+
+    private fun floatTexture(w: Int, h: Int): Int {
+        val ids = IntArray(1)
+        GLES20.glGenTextures(1, ids, 0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        if (halfFloat) {
+            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES30.GL_R16F, w, h, 0, GLES30.GL_RED, GLES20.GL_FLOAT, null)
+        } else {
+            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES30.GL_R8, w, h, 0, GLES30.GL_RED, GLES20.GL_UNSIGNED_BYTE, null)
+        }
+        return ids[0]
+    }
+
+    private fun releaseDepth() {
+        val tex = intArrayOf(smallTex, rawTex, smoothTex[0], smoothTex[1]).filter { it != 0 }.toIntArray()
+        if (tex.isNotEmpty()) GLES20.glDeleteTextures(tex.size, tex, 0)
+        val fbos = intArrayOf(smallFbo, rawFbo, smoothFbo[0], smoothFbo[1]).filter { it != 0 }.toIntArray()
+        if (fbos.isNotEmpty()) GLES20.glDeleteFramebuffers(fbos.size, fbos, 0)
+        smallTex = 0; rawTex = 0; smallFbo = 0; rawFbo = 0
+        smoothTex.fill(0); smoothFbo.fill(0)
+        smallW = 0; smallH = 0
+    }
+
+    override fun release() {
+        super.release()
+        worker.shutdownNow()
+        runCatching { releaseDepth() }
+        listOf(sbsProgram, smoothProgram, heuristicProgram, smallProgram).forEach { runCatching { it.delete() } }
+    }
+
+    private fun even(v: Float) = max(2, v.roundToInt() / 2 * 2)
+
+    companion object {
+        /** Must match STORE in the overridden Media3 shaders (HDR stored at 1/256). */
+        private const val HDR_STORE = 256f
+        private const val DEPTH_INTERVAL_US = 80_000L
+
+        private fun program(context: Context, fragment: String): GlProgram =
+            GlProgram(context, "memc/fullscreen.vert", fragment).apply {
+                setBufferAttribute("aFramePosition", GlUtil.getNormalizedCoordinateBounds(), 4)
+            }
+    }
+}

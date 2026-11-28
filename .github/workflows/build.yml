@@ -34,7 +34,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq glslang-tools > /dev/null
-          glslangValidator app/src/main/assets/memc/*.vert app/src/main/assets/memc/*.frag
+          glslangValidator app/src/main/assets/memc/*.vert app/src/main/assets/memc/*.frag app/src/main/assets/stereo/*.frag
           # The two Media3 shaders this app replaces (see the note at the top of each file).
           glslangValidator -S frag app/src/main/assets/shaders/fragment_shader_oetf_es3.glsl
           glslangValidator -S frag app/src/main/assets/shaders/fragment_shader_transformation_external_yuv_es3.glsl || echo "(external-texture shader: this validator may not know the YUV extension)"
