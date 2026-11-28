@@ -62,6 +62,17 @@ jobs:
           done
           ls -la app/src/phone/assets/npu || true
 
+      - name: Fetch the 3D models
+        run: |
+          # Packed into the phone APK so AI 3D and the 3D export work without a download.
+          mkdir -p app/src/phone/assets/models
+          for f in depth_v2s_518x294.onnx vda_s_enc.onnx vda_s_tmp.onnx vda_s_dec.onnx; do
+            curl -fsSL -o "app/src/phone/assets/models/$f" \
+              "https://github.com/${{ github.repository }}/releases/download/depth-model/$f" \
+              || { rm -f "app/src/phone/assets/models/$f"; echo "::warning::3D model $f not found - this build will download it when needed."; }
+          done
+          ls -la app/src/phone/assets/models || true
+
       - name: Build release APK
         env:
           VERSION_CODE: ${{ github.run_number }}

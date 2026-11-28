@@ -6,7 +6,7 @@ import java.io.File
 /**
  * Video Depth Anything Small (ByteDance, Apache-2.0) for the 3D export, split into three
  * graphs by the "3D export model" workflow (tools/depth/export_vda.py): a per-frame encoder,
- * a 32-frame temporal part and a per-frame decoder. Downloaded once (about 115 MB).
+ * a 32-frame temporal part and a per-frame decoder. Packed in the phone APK (about 115 MB).
  */
 object VdaModel {
     const val WIDTH = 518
@@ -21,20 +21,16 @@ object VdaModel {
         "vda_s_dec.onnx" to 400L * 1024,
     )
 
-    private fun dir(context: Context) = File(context.filesDir, "npu").apply { mkdirs() }
+    /** Packed in the phone APK; downloaded only by builds made without them. */
+    val refs = PARTS.map { (name, min) -> ModelRef(name, min) }
 
-    fun file(context: Context, name: String) = File(dir(context), name)
+    fun file(context: Context, name: String) = ModelRef(name, 0).downloaded(context)
 
-    fun ready(context: Context) = PARTS.all { (name, min) -> file(context, name).let { it.exists() && it.length() >= min } }
-
-    fun delete(context: Context) {
-        PARTS.keys.forEach { file(context, it).delete() }
-        dir(context).listFiles()?.filter { it.name.startsWith("vda_ctx") }?.forEach { it.delete() }
-    }
+    fun ready(context: Context) = refs.all { it.ready(context) }
 
     /** Downloads whatever is missing, reporting overall progress 0..1. */
     suspend fun download(context: Context, onProgress: (Float) -> Unit) {
-        val missing = PARTS.filter { (name, min) -> file(context, name).let { !it.exists() || it.length() < min } }
+        val missing = PARTS.filter { (name, min) -> !ModelRef(name, min).ready(context) }
         // Weights for the progress bar, roughly the file sizes.
         val weight = mapOf("vda_s_enc.onnx" to 0.82f, "vda_s_tmp.onnx" to 0.17f, "vda_s_dec.onnx" to 0.01f)
         var done = PARTS.keys.filter { it !in missing }.sumOf { (weight[it] ?: 0f).toDouble() }.toFloat()

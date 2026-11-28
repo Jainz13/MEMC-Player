@@ -4,6 +4,7 @@ import com.jainz.memc.ui.components.tvFocusRing
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ViewInAr
 import com.jainz.memc.ui.components.DeleteVideosDialog
 import com.jainz.memc.BuildConfig
 import androidx.compose.foundation.background
@@ -89,6 +90,8 @@ fun MovieDetailScreen(nav: NavController, tmdbId: Long) {
     var menu by remember { mutableStateOf(false) }
     var fixing by remember { mutableStateOf(false) }
     val export = rememberExportAction()
+    val export3d = com.jainz.memc.ui.components.rememberExport3dAction()
+    var picking3d by remember { mutableStateOf(false) }
     val download = rememberDownloadAction()
 
     val m = movie
@@ -167,26 +170,67 @@ fun MovieDetailScreen(nav: NavController, tmdbId: Long) {
                             )
                         }
                         val movieName = listOfNotNull(m?.title ?: primary.parsedTitle, m?.year?.let { "($it)" }).joinToString(" ")
-                        // Secondary actions as equal tiles, all visible at once.
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                        ) {
-                            ActionTile(
-                                Icons.Filled.Visibility,
-                                if (primary.watched) "Watched" else "Mark watched",
-                                Modifier.weight(1f),
-                                tint = if (primary.watched) Palette.Accent else Palette.Text,
-                            ) { scope.launch { g.db.videos().setWatched(primary.id, !primary.watched) } }
+                        if (picking3d) {
+                            androidx.compose.material3.AlertDialog(
+                                onDismissRequest = { picking3d = false },
+                                title = { Text("Export in 3D") },
+                                text = {
+                                    Text(
+                                        "Makes a side-by-side 3D copy with the AI (Video Depth Anything on the NPU), using the depth and eye settings from the player's 3D panel. " +
+                                            "It runs in the background and takes longer than the film itself.\n\n" +
+                                            "Full SBS (3840×1080): AR glasses such as RayNeo, XREAL, VITURE.\n" +
+                                            "Half SBS (1920×1080): 3D TVs and projectors.",
+                                    )
+                                },
+                                confirmButton = {
+                                    androidx.compose.material3.TextButton(onClick = {
+                                        picking3d = false
+                                        export3d(primary.uri, movieName, false)
+                                    }) { Text("Full SBS") }
+                                },
+                                dismissButton = {
+                                    androidx.compose.material3.TextButton(onClick = {
+                                        picking3d = false
+                                        export3d(primary.uri, movieName, true)
+                                    }) { Text("Half SBS") }
+                                },
+                            )
+                        }
+                        // Secondary actions as equal tiles, all visible at once (three to a row).
+                        val tiles = buildList<@Composable (Modifier) -> Unit> {
+                            add { mod ->
+                                ActionTile(
+                                    Icons.Filled.Visibility,
+                                    if (primary.watched) "Watched" else "Mark watched",
+                                    mod,
+                                    tint = if (primary.watched) Palette.Accent else Palette.Text,
+                                ) { scope.launch { g.db.videos().setWatched(primary.id, !primary.watched) } }
+                            }
                             if (primary.uri.startsWith("smb://")) {
-                                ActionTile(Icons.Filled.Download, "Download ${Format.size(primary.size)}", Modifier.weight(1f)) {
-                                    download(primary, movieName)
+                                add { mod ->
+                                    ActionTile(Icons.Filled.Download, "Download ${Format.size(primary.size)}", mod) {
+                                        download(primary, movieName)
+                                    }
                                 }
                             }
                             if (!BuildConfig.TV) {
-                                ActionTile(Icons.Filled.Speed, "Export 60 fps", Modifier.weight(1f)) { export(primary.uri, movieName) }
+                                add { mod -> ActionTile(Icons.Filled.Speed, "Export 60 fps", mod) { export(primary.uri, movieName) } }
                             }
-                            ActionTile(Icons.Filled.Delete, "Delete", Modifier.weight(1f), tint = Palette.Danger) { deleting = true }
+                            if (com.jainz.memc.ui.components.canExport3d) {
+                                add { mod -> ActionTile(Icons.Filled.ViewInAr, "Export 3D", mod) { picking3d = true } }
+                            }
+                            add { mod -> ActionTile(Icons.Filled.Delete, "Delete", mod, tint = Palette.Danger) { deleting = true } }
+                        }
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                        ) {
+                            tiles.chunked(3).forEach { row ->
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                    row.forEach { it(Modifier.weight(1f)) }
+                                    repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                                }
+                            }
                         }
                     }
                 }

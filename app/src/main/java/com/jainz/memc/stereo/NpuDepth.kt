@@ -63,30 +63,22 @@ class NpuDepth private constructor(
         fun create(context: Context): NpuDepth {
             if (!NpuFlow.isSnapdragon) throw IllegalStateException("AI 3D needs a Snapdragon chip's NPU")
             if (!DepthModel.ready(context)) throw IllegalStateException("the AI 3D model isn't downloaded")
-            val model = DepthModel.file(context)
             val libs = context.applicationInfo.nativeLibraryDir
             runCatching { Os.setenv("ADSP_LIBRARY_PATH", "$libs;/vendor/dsp/cdsp;/vendor/lib/rfsa/adsp;/system/lib/rfsa/adsp;/dsp", true) }
             val env = OrtEnvironment.getEnvironment()
-            val options = OrtSession.SessionOptions()
-            options.addQnn(
-                mapOf(
-                    "backend_path" to "$libs/libQnnHtp.so",
-                    "htp_performance_mode" to "sustained_high_performance",
-                    "htp_graph_finalization_optimization_mode" to "3",
-                    "enable_htp_fp16_precision" to "1",
-                )
-            )
-            val cached = File(model.parentFile, "depth_ctx_${model.length()}.onnx")
-            val session = if (cached.exists()) {
-                runCatching { env.createSession(cached.absolutePath, options) }.getOrElse {
-                    cached.delete()
-                    env.createSession(model.absolutePath, options)
+            // Compiled copies from before the model was packed in the APK.
+            File(context.filesDir, "npu").listFiles()?.filter { it.name.startsWith("depth_ctx") }?.forEach { it.delete() }
+            val session = DepthModel.ref.open(context, env) {
+                OrtSession.SessionOptions().apply {
+                    addQnn(
+                        mapOf(
+                            "backend_path" to "$libs/libQnnHtp.so",
+                            "htp_performance_mode" to "sustained_high_performance",
+                            "htp_graph_finalization_optimization_mode" to "3",
+                            "enable_htp_fp16_precision" to "1",
+                        )
+                    )
                 }
-            } else {
-                options.addConfigEntry("ep.context_enable", "1")
-                options.addConfigEntry("ep.context_file_path", cached.absolutePath)
-                options.addConfigEntry("ep.context_embed_mode", "0")
-                env.createSession(model.absolutePath, options)
             }
             val depth = NpuDepth(env, session)
             depth.run() // test run: a broken setup fails here, not mid-video

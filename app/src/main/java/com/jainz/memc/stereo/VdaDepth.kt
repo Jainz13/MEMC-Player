@@ -7,7 +7,6 @@ import ai.onnxruntime.TensorInfo
 import android.content.Context
 import android.system.Os
 import com.jainz.memc.memc.NpuFlow
-import java.io.File
 import java.nio.FloatBuffer
 import java.util.IdentityHashMap
 import kotlin.math.abs
@@ -273,12 +272,11 @@ class VdaDepth private constructor(
             val libs = context.applicationInfo.nativeLibraryDir
             runCatching { Os.setenv("ADSP_LIBRARY_PATH", "$libs;/vendor/dsp/cdsp;/vendor/lib/rfsa/adsp;/system/lib/rfsa/adsp;/dsp", true) }
             val env = OrtEnvironment.getEnvironment()
-            val names = VdaModel.PARTS.keys.toList()
             val sessions = ArrayList<OrtSession>()
             try {
-                for ((i, name) in names.withIndex()) {
+                for ((i, ref) in VdaModel.refs.withIndex()) {
                     onStep("Preparing the AI 3D model for this phone (${i + 1}/3, first time takes a few minutes)…")
-                    sessions += open(env, VdaModel.file(context, name), libs)
+                    sessions += ref.open(context, env) { options(libs) }
                 }
                 val vda = VdaDepth(env, sessions[0], sessions[1], sessions[2])
                 // Test run, so a broken setup fails here and not an hour into a film.
@@ -296,9 +294,8 @@ class VdaDepth private constructor(
             }
         }
 
-        private fun open(env: OrtEnvironment, model: File, libs: String): OrtSession {
-            val options = OrtSession.SessionOptions()
-            options.addQnn(
+        private fun options(libs: String) = OrtSession.SessionOptions().apply {
+            addQnn(
                 mapOf(
                     "backend_path" to "$libs/libQnnHtp.so",
                     "htp_performance_mode" to "sustained_high_performance",
@@ -306,18 +303,6 @@ class VdaDepth private constructor(
                     "enable_htp_fp16_precision" to "1",
                 )
             )
-            val cached = File(model.parentFile, "vda_ctx_${model.nameWithoutExtension}_${model.length()}.onnx")
-            return if (cached.exists()) {
-                runCatching { env.createSession(cached.absolutePath, options) }.getOrElse {
-                    cached.delete()
-                    env.createSession(model.absolutePath, options)
-                }
-            } else {
-                options.addConfigEntry("ep.context_enable", "1")
-                options.addConfigEntry("ep.context_file_path", cached.absolutePath)
-                options.addConfigEntry("ep.context_embed_mode", "0")
-                env.createSession(model.absolutePath, options)
-            }
         }
     }
 }

@@ -36,16 +36,47 @@ import com.jainz.memc.ui.theme.Palette
 /** Returns a function that queues a 60 fps export, asking once for notification permission. */
 @Composable
 fun rememberExportAction(): (uri: String, title: String) -> Unit {
+    val any = rememberAnyExportAction()
+    return { uri, title -> any(uri, title, null) }
+}
+
+/**
+ * Returns a function that queues a 3D export (Video Depth Anything) with the 3D look saved
+ * from the player (depth and eye swap). Argument: true for half side-by-side.
+ */
+@Composable
+fun rememberExport3dAction(): (uri: String, title: String, halfSbs: Boolean) -> Unit {
+    val any = rememberAnyExportAction()
+    return { uri, title, half ->
+        val settings = com.jainz.memc.MemcApp.graph.settings
+        any(
+            uri, title,
+            com.jainz.memc.export.ThreeDExport(
+                halfSbs = half,
+                strength = settings.stereoStrength.value / 100f,
+                convergence = 0.35f,
+                swapEyes = settings.stereoSwap.value,
+            ),
+        )
+    }
+}
+
+/** True where the 3D export can run: a Snapdragon phone (it needs the NPU). */
+val canExport3d: Boolean get() = !com.jainz.memc.BuildConfig.TV && com.jainz.memc.memc.NpuFlow.isSnapdragon
+
+@Composable
+private fun rememberAnyExportAction(): (String, String, com.jainz.memc.export.ThreeDExport?) -> Unit {
     val context = LocalContext.current
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-    return { uri, title ->
+    return { uri, title, threeD ->
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
-        ExportManager.enqueue(context, uri, title)
-        android.widget.Toast.makeText(context, "Exporting \"$title\" at 60 fps - see Library → Exports", android.widget.Toast.LENGTH_LONG).show()
+        ExportManager.enqueue(context, uri, title, threeD)
+        val what = threeD?.let { if (it.halfSbs) "in 3D (Half SBS)" else "in 3D (Full SBS)" } ?: "at 60 fps"
+        android.widget.Toast.makeText(context, "Exporting \"$title\" $what - see Library → Exports", android.widget.Toast.LENGTH_LONG).show()
     }
 }
 

@@ -21,9 +21,12 @@ object DepthModel {
     private const val URL = "https://github.com/Jainz13/MEMC-Player/releases/download/depth-model/$NAME"
     private const val MIN_BYTES = 20L * 1024 * 1024
 
-    fun file(context: Context) = File(File(context.filesDir, "npu").apply { mkdirs() }, NAME)
+    /** Packed in the phone APK; downloaded only by builds made without it. */
+    val ref = ModelRef(NAME, MIN_BYTES)
 
-    fun ready(context: Context) = file(context).let { it.exists() && it.length() > MIN_BYTES }
+    fun file(context: Context) = ref.downloaded(context)
+
+    fun ready(context: Context) = ref.ready(context)
 
     fun sizeMb(context: Context) = file(context).length() / (1024 * 1024)
 

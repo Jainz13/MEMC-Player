@@ -28,6 +28,12 @@ android {
     namespace = "com.jainz.memc"
     compileSdk = 36
 
+    // AI models stay uncompressed in the APK (they barely compress), so the app can read their size
+    // and copy them out quickly.
+    androidResources {
+        noCompress += listOf("onnx")
+    }
+
     defaultConfig {
         applicationId = "com.jainz.memc"
         minSdk = 29
