@@ -1,0 +1,55 @@
+name: 3D export model (Video Depth Anything)
+
+# Prepares Video Depth Anything Small for the phone's NPU (split into three graphs, see
+# tools/depth/export_vda.py) and adds it to the "depth-model" pre-release. The app downloads
+# it the first time a video is exported as 3D.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "tools/depth/export_vda.py"
+      - ".github/workflows/vda-model.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vda-model
+  cancel-in-progress: true
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install tools
+        run: |
+          pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -q numpy onnx onnxruntime onnxsim qai-hub einops easydict tqdm opencv-python-headless
+      - name: Prepare the model
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
+        run: |
+          if [ -n "$QAI_HUB_API_TOKEN" ]; then qai-hub configure --api_token "$QAI_HUB_API_TOKEN" > /dev/null; fi
+          python tools/depth/export_vda.py --out out --work work
+          cat out/vda-report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: depth-model
+          name: Depth models for 3D (not an app release)
+          prerelease: true
+          make_latest: false
+          body: |
+            Depth Anything V2 Small (Apache-2.0), fixed to 518x294, for live 2D-to-3D (depth-report.md).
+            Video Depth Anything Small (Apache-2.0), split into vda_s_enc / vda_s_tmp / vda_s_dec at 518x294 with 32-frame windows, for the 3D export (vda-report.md).
+          files: |
+            out/*.onnx
+            out/vda.json
+            out/vda-report.md
