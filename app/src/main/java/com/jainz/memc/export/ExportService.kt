@@ -534,7 +534,7 @@ class ExportService : Service() {
                             npuPercent = sample?.npuPercent ?: 0, npuMsPerPass = sample?.npuMsPerPass ?: 0,
                             engine = when (phase) {
                                 1 -> "3D step 1 of 2: AI depth on the NPU (Video Depth Anything" +
-                                    (vda?.let { v -> if (v.encMs > 0) ", ${v.encMs.toInt()} ms a frame + ${v.windowMs.toInt()} ms per 22" else "" } ?: "") + ")"
+                                    (vda?.let { v -> if (v.encMs > 0) ", ${v.encMs.toInt()} ms a frame + ${v.windowMs.toInt()} ms per 22, temporal part on the ${com.jainz.memc.stereo.VdaDepth.tmpWhere}" else "" } ?: "") + ")"
                                 2 -> "3D step 2 of 2: rendering ${ExportManager.get(currentId)?.kindLabel ?: "3D"} on the GPU"
                                 else -> if (npuStatus.startsWith("AI on")) "AI on the NPU" else if (npuStatus.isNotBlank()) "GPU engine ($npuStatus)" else "GPU engine"
                             },

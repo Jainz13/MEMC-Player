@@ -122,9 +122,9 @@ android {
         jniLibs {
             useLegacyPackaging = true
             // The NPU runtime for every Snapdragon generation (V68 = Snapdragon 888 onwards)
-            // is kept so AI mode works on any Snapdragon phone. Only the parts this app never
-            // uses (the older DSP and GPU back ends) are dropped.
-            excludes += listOf("**/libQnnDsp*.so", "**/libQnnGpu.so")
+            // is kept so AI mode works on any Snapdragon phone, plus the GPU back end (part of
+            // the 3D export runs there). Only the older DSP back end is dropped.
+            excludes += listOf("**/libQnnDsp*.so")
         }
     }
 
