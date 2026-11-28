@@ -1,0 +1,42 @@
+name: 3D export model NPU trials
+
+# Tries forms of Video Depth Anything's 32-frame part on the S24 NPU (AI Hub), to find one
+# the NPU compiler can build. Results in the run summary; nothing is published.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "tools/depth/vda_npu_trials.py"
+      - ".github/workflows/vda-npu-trials.yml"
+
+concurrency:
+  group: vda-npu-trials
+  cancel-in-progress: true
+
+jobs:
+  trials:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install tools
+        run: |
+          pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -q numpy onnx onnxruntime onnxsim qai-hub einops easydict tqdm opencv-python-headless
+      - name: Trials
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
+        run: |
+          if [ -n "$QAI_HUB_API_TOKEN" ]; then qai-hub configure --api_token "$QAI_HUB_API_TOKEN" > /dev/null; fi
+          python tools/depth/vda_npu_trials.py
+          cat trials/trials-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vda-npu-trials
+          path: trials/trials-report.md
