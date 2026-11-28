@@ -17,6 +17,7 @@ import java.nio.ByteOrder
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -71,7 +72,19 @@ private class StereoShaderProgram(
     // AI depth on a worker thread
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "memc-depth").apply { priority = Thread.NORM_PRIORITY - 1 } }
     private val busy = AtomicBoolean(false)
-    private val result = AtomicReference<FloatArray?>(null)
+    private val result = AtomicReference<DepthResult?>(null)
+    private class DepthResult(val depth: FloatArray, val cut: Boolean)
+
+    // Scene cuts and a steady depth range (ideas from make-it-3d / iw3): the range of each
+    // depth map is eased over time instead of jumping, and both restart at a cut so a new
+    // shot never inherits the last one's depth.
+    private val thumb = FloatArray(THUMB_W * THUMB_H * 3)
+    private val thumbCount = IntArray(THUMB_W * THUMB_H)
+    private var prevThumb: FloatArray? = null
+    @Volatile private var pendingCut = false
+    private var rangeLo = Float.NaN
+    private var rangeHi = Float.NaN
+    private var cuts = 0
     private var pixels: ByteBuffer? = null
     private var lastDepthPts = Long.MIN_VALUE
     private var aiFailed = false
@@ -120,6 +133,8 @@ private class StereoShaderProgram(
     private fun setUpDepth(ai: Boolean = control.npu != null && !aiFailed && !control.hot) {
         val w = if (ai) DepthModel.WIDTH else 192
         val h = if (ai) DepthModel.HEIGHT else 108
+        prevThumb = null
+        rangeLo = Float.NaN
         if (w == smallW && h == smallH && smallTex != 0) return
         releaseDepth()
         smallW = w
@@ -189,11 +204,12 @@ private class StereoShaderProgram(
         var mix = 0.15f
         if (npu != null) {
             // Take a finished depth map, if one is waiting.
-            result.getAndSet(null)?.let { depth ->
+            result.getAndSet(null)?.let { r ->
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, rawTex)
-                GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, depthW, depthH, GLES30.GL_RED, GLES20.GL_FLOAT, java.nio.FloatBuffer.wrap(depth))
+                GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, depthW, depthH, GLES30.GL_RED, GLES20.GL_FLOAT, java.nio.FloatBuffer.wrap(r.depth))
                 fresh = true
-                mix = 0.55f
+                // A new shot replaces the depth outright instead of fading in from the last one.
+                mix = if (r.cut) 1f else 0.55f
                 countDepth()
             }
             // Start the next one: about 12 a second of video, never more than one at a time.
@@ -203,7 +219,9 @@ private class StereoShaderProgram(
                 val buf = pixels!!
                 buf.clear()
                 GLES20.glReadPixels(0, 0, smallW, smallH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
-                fillModelInput(buf, npu)
+                val cut = fillModelInput(buf, npu) || jumped
+                pendingCut = cut
+                if (cut && !jumped) cuts++
                 worker.execute { runModel(npu) }
             }
         } else {
@@ -245,29 +263,57 @@ private class StereoShaderProgram(
         GLES20.glClearColor(0f, 0f, 0f, 0f)
     }
 
-    /** RGBA bytes (bottom row first) -> the model's planar, normalised input (top row first). */
-    private fun fillModelInput(buf: ByteBuffer, npu: NpuDepth) {
+    /**
+     * RGBA bytes (bottom row first) -> the model's planar, normalised input (top row first).
+     * Also builds a tiny thumbnail of the frame and returns true when it differs enough from
+     * the previous one to be a scene cut.
+     */
+    private fun fillModelInput(buf: ByteBuffer, npu: NpuDepth): Boolean {
         val w = smallW
         val h = smallH
         val plane = w * h
         val input = npu.input
         val arr = modelInput ?: FloatArray(3 * plane).also { modelInput = it }
+        thumb.fill(0f)
+        thumbCount.fill(0)
         for (y in 0 until h) {
             val srcRow = (h - 1 - y) * w * 4
             val dst = y * w
+            val tRow = (y * THUMB_H / h) * THUMB_W
             for (x in 0 until w) {
                 val i = srcRow + x * 4
                 val o = dst + x
-                arr[o] = ((buf.get(i).toInt() and 0xFF) / 255f - 0.485f) / 0.229f
-                arr[plane + o] = ((buf.get(i + 1).toInt() and 0xFF) / 255f - 0.456f) / 0.224f
-                arr[2 * plane + o] = ((buf.get(i + 2).toInt() and 0xFF) / 255f - 0.406f) / 0.225f
+                val r = (buf.get(i).toInt() and 0xFF) / 255f
+                val g = (buf.get(i + 1).toInt() and 0xFF) / 255f
+                val b = (buf.get(i + 2).toInt() and 0xFF) / 255f
+                arr[o] = (r - 0.485f) / 0.229f
+                arr[plane + o] = (g - 0.456f) / 0.224f
+                arr[2 * plane + o] = (b - 0.406f) / 0.225f
+                val t = tRow + x * THUMB_W / w
+                thumb[t * 3] += r; thumb[t * 3 + 1] += g; thumb[t * 3 + 2] += b
+                thumbCount[t]++
             }
+        }
+        for (t in thumbCount.indices) {
+            val n = thumbCount[t].coerceAtLeast(1).toFloat()
+            thumb[t * 3] /= n; thumb[t * 3 + 1] /= n; thumb[t * 3 + 2] /= n
+        }
+        val prev = prevThumb
+        var cut = false
+        if (prev == null) {
+            prevThumb = thumb.copyOf()
+        } else {
+            var diff = 0f
+            for (k in thumb.indices) diff += abs(thumb[k] - prev[k])
+            cut = diff / thumb.size > CUT_THRESHOLD
+            thumb.copyInto(prev)
         }
         synchronized(npu) {
             input.clear()
             input.put(arr)
             input.rewind()
         }
+        return cut
     }
 
     private var modelInput: FloatArray? = null
@@ -281,20 +327,30 @@ private class StereoShaderProgram(
             val plane = w * h
             val raw = FloatArray(plane)
             out.get(raw, 0, plane)
-            // Robust range: ignore the extreme 1% at each end so one bright speck doesn't flatten the rest.
+            // Robust range: ignore the extreme 2% at each end so one bright speck doesn't flatten
+            // the rest, then ease it over time so the depth doesn't "breathe" from map to map.
+            val cut = pendingCut
             val sample = FloatArray(plane / 16) { raw[it * 16] }
             sample.sort()
-            val lo = sample[(sample.size * 0.01f).toInt()]
-            val hi = sample[(sample.size * 0.99f).toInt().coerceAtMost(sample.size - 1)]
-            val scale = if (hi - lo > 1e-6f) 1f / (hi - lo) else 0f
+            val lo = sample[(sample.size * 0.02f).toInt()]
+            val hi = sample[(sample.size * 0.98f).toInt().coerceAtMost(sample.size - 1)]
+            if (cut || rangeLo.isNaN()) {
+                rangeLo = lo; rangeHi = hi
+            } else {
+                rangeLo += (lo - rangeLo) * RANGE_EASE
+                rangeHi += (hi - rangeHi) * RANGE_EASE
+            }
+            val scale = if (rangeHi - rangeLo > 1e-6f) 1f / (rangeHi - rangeLo) else 0f
+            val lo0 = rangeLo
             val depth = FloatArray(plane)
             for (y in 0 until h) {
                 val src = y * w
                 val dst = (h - 1 - y) * w
-                for (x in 0 until w) depth[dst + x] = ((raw[src + x] - lo) * scale).coerceIn(0f, 1f)
+                for (x in 0 until w) depth[dst + x] = ((raw[src + x] - lo0) * scale).coerceIn(0f, 1f)
             }
-            result.set(depth)
-            control.status = "AI 3D on the NPU, ${npu.averageMs.roundToInt()} ms per depth map"
+            result.set(DepthResult(depth, cut))
+            control.status = "AI 3D on the NPU, ${npu.averageMs.roundToInt()} ms per depth map" +
+                if (cuts > 0) ", $cuts scene cuts" else ""
         } catch (e: Throwable) {
             aiFailed = true
             control.status = "AI 3D stopped (${e.message ?: e.javaClass.simpleName}) - using picture cues"
@@ -360,6 +416,12 @@ private class StereoShaderProgram(
         /** Must match STORE in the overridden Media3 shaders (HDR stored at 1/256). */
         private const val HDR_STORE = 256f
         private const val DEPTH_INTERVAL_US = 80_000L
+        /** Scene-cut thumbnail (64x36) and the mean colour change that counts as a cut. */
+        private const val THUMB_W = 64
+        private const val THUMB_H = 36
+        private const val CUT_THRESHOLD = 0.13f
+        /** Share of each new depth range taken (depth maps arrive about 12 a second). */
+        private const val RANGE_EASE = 0.2f
 
         private fun program(context: Context, fragment: String): GlProgram =
             GlProgram(context, "memc/fullscreen.vert", fragment).apply {
