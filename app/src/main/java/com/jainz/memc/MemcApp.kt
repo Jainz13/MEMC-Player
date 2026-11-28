@@ -35,6 +35,11 @@ class MemcApp : Application(), SingletonImageLoader.Factory {
 
     override fun onCreate() {
         super.onCreate()
+        // The NPU compile process (NpuCompileService) needs none of the app's services.
+        if (android.os.Build.VERSION.SDK_INT >= 28 && getProcessName().endsWith(":npucompile")) {
+            instance = this
+            return
+        }
         CrashLog.install(this)
         instance = this
         graph = AppGraph(this)

@@ -133,6 +133,83 @@ class Tmp(nn.Module):
         return path_3.permute(0, 2, 1, 3, 4).flatten(0, 1)
 
 
+# ---- The temporal part again, in plain 4-D layout for the NPU ----
+# The model's own form (3-D token tensors through Linear layers and norms) never finished
+# compiling for the Snapdragon NPU. This is the same maths with 1x1 convolutions and norms written
+# out on (frames, channels, height, width) tensors; the app tries it on the NPU and keeps the
+# CPU version as the fallback.
+
+def conv1x1(x, lin):
+    return F.conv2d(x, lin.weight[:, :, None, None], lin.bias)
+
+
+def ln_c(x, ln):
+    m = x.mean(1, keepdim=True)
+    v = ((x - m) ** 2).mean(1, keepdim=True)
+    return (x - m) / torch.sqrt(v + ln.eps) * ln.weight[None, :, None, None] + ln.bias[None, :, None, None]
+
+
+def gn(x, g):
+    f, C, H, W = x.shape
+    G = g.num_groups
+    y = x.reshape(f, G, C // G, H * W)
+    m = y.mean((2, 3), keepdim=True)
+    v = ((y - m) ** 2).mean((2, 3), keepdim=True)
+    y = ((y - m) / torch.sqrt(v + g.eps)).reshape(f, C, H, W)
+    return y * g.weight[None, :, None, None] + g.bias[None, :, None, None]
+
+
+def attn_nchw(x, a, f):
+    assert a.group_norm is None
+    _, C, H, W = x.shape
+    x = x + a.pos_encoder.pe[0, :f][:, :, None, None].to(x.dtype)
+    h = a.heads
+    e = C // h
+    q = (conv1x1(x, a.to_q) * a.scale).reshape(f, h, e, H * W)
+    k = conv1x1(x, a.to_k).reshape(f, h, e, H * W)
+    v = conv1x1(x, a.to_v).reshape(f, h, e, H * W)
+    s = torch.cat([(q * k[j:j + 1]).sum(2, keepdim=True) for j in range(f)], dim=2)  # (f, h, f, HW)
+    p = torch.softmax(s, dim=2)
+    o = p[:, :, 0:1] * v[0:1]
+    for j in range(1, f):
+        o = o + p[:, :, j:j + 1] * v[j:j + 1]
+    return conv1x1(o.reshape(f, C, H, W), a.to_out[0])
+
+
+def ff_nchw(x, ffm):
+    y = conv1x1(x, ffm.net[0].proj)
+    y, gate = y.chunk(2, dim=1)
+    return conv1x1(y * F.gelu(gate), ffm.net[2])
+
+
+def tm_nchw(tm, x):
+    t = tm.temporal_transformer
+    f = x.shape[0]
+    h = conv1x1(gn(x, t.norm), t.proj_in)
+    for blk in t.transformer_blocks:
+        for a, n in zip(blk.attention_blocks, blk.norms):
+            h = attn_nchw(ln_c(h, n), a, f) + h
+        h = ff_nchw(ln_c(h, blk.ff_norm), blk.ff) + h
+    return conv1x1(h, t.proj_out) + x
+
+
+class TmpNchw(nn.Module):
+    def __init__(self, m):
+        super().__init__()
+        self.m = m
+
+    def forward(self, l3, l4):
+        head = self.m.head
+        s = head.scratch
+        l3 = tm_nchw(head.motion_modules[0], l3)
+        l4 = tm_nchw(head.motion_modules[1], l4)
+        l3rn = s.layer3_rn(l3)
+        l4rn = s.layer4_rn(l4)
+        path_4 = tm_nchw(head.motion_modules[2], s.refinenet4(l4rn, size=l3rn.shape[2:]))
+        path_3 = s.refinenet3(path_4, l3rn, size=(PH * 2, PW * 2))
+        return tm_nchw(head.motion_modules[3], path_3)
+
+
 class Dec(nn.Module):
     """One frame's path_3, l2rn, l1rn -> depth 1x294x518 (bigger = nearer)."""
 
@@ -186,7 +263,7 @@ def time_on_aihub(out):
     from aihub_profile import pick_device, status_of, summarise
     device = pick_device(hub)
     lines = [f"## AI Hub ({device.name})", ""]
-    for part in ("enc", "tmp", "dec"):
+    for part in ("tmp4d",):
         path = os.path.join(out, f"vda_s_{part}.onnx")
         try:
             job = hub.submit_compile_job(model=path, device=device, name=f"vda-{part}",
@@ -254,6 +331,14 @@ def main():
     export(tmp, (l3, l4), ["l3", "l4"], ["path3"], f_tmp)
     p3 = tmp(l3, l4)
     export(dec, (p3[:1], p[1], p[0]), ["path3", "l2rn", "l1rn"], ["depth"], f_dec)
+    f_tmp4d = os.path.join(args.out, "vda_s_tmp4d.onnx")
+    export(TmpNchw(m).eval(), (l3, l4), ["l3", "l4"], ["path3"], f_tmp4d)
+    s4 = ort.InferenceSession(f_tmp4d, providers=["CPUExecutionProvider"])
+    got4 = s4.run(None, {"l3": l3.numpy(), "l4": l4.numpy()})[0]
+    tmp4d_err = float(np.abs(got4 - p3.numpy()).max() / max(np.abs(p3.numpy()).max(), 1e-6))
+    print("tmp4d vs tmp", tmp4d_err)
+    if tmp4d_err > 1e-3:
+        raise SystemExit("The 4-D temporal part doesn't match")
 
     # 3. The ONNX parts must match too (CPU), and time them.
     so = ort.SessionOptions()
@@ -291,7 +376,7 @@ def main():
     }
     lines = ["# Video Depth Anything Small for the 3D export", "",
              f"- split vs full model: max diff {err:.2e}; ONNX vs model: {onnx_err:.2e}",
-             f"- sizes (MB): {info['size_mb']}",
+             f"- sizes (MB): {info['size_mb']}; 4-D temporal part (for the NPU) vs the original: {tmp4d_err:.2e}",
              f"- CPU on the GitHub runner: {info['github_runner_cpu_ms']} ms (enc and dec per frame, tmp per window)", ""]
 
     lines.append("NPU timing: see the AI Hub step of this workflow run.")

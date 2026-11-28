@@ -28,6 +28,9 @@ object VdaModel {
 
     fun ready(context: Context) = refs.all { it.ready(context) }
 
+    /** The temporal part rewritten for the NPU (optional: builds without it use the CPU). */
+    val tmpNpu = ModelRef("vda_s_tmp4d.onnx", 8L * 1024 * 1024)
+
     /** Downloads whatever is missing, reporting overall progress 0..1. */
     suspend fun download(context: Context, onProgress: (Float) -> Unit) {
         val missing = PARTS.filter { (name, min) -> !ModelRef(name, min).ready(context) }

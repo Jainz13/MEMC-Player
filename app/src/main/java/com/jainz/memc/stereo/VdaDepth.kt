@@ -25,11 +25,36 @@ import kotlin.math.abs
  * Not thread-safe: use from one thread.
  */
 class VdaDepth private constructor(
+    private val context: Context,
     private val env: OrtEnvironment,
     private val enc: OrtSession,
-    private val tmp: OrtSession,
+    private var tmp: OrtSession,
     private val dec: OrtSession,
 ) : AutoCloseable {
+    /** Where the 32-frame temporal part runs ("NPU" or "CPU"), for the status line. */
+    @Volatile var tmpWhere = "CPU"
+        private set
+    private var windows = 0
+
+    /**
+     * Moves the temporal part to the NPU once its compiled copy is ready (it is compiled in the
+     * background, in its own process; see NpuCompileService).
+     */
+    private fun maybeUseNpu() {
+        if (tmpWhere == "NPU" || windows++ % 20 != 0) return
+        val ref = VdaModel.tmpNpu
+        if (!NpuCompile.ready(context, ref) || !ref.hasCompiledCopy(context)) return
+        val npu = runCatching { ref.open(context, env) { npuOptions(context.applicationInfo.nativeLibraryDir) } }.getOrElse {
+            NpuCompile.mark(context, ref, "failed: couldn't load the compiled copy (${it.message})")
+            return
+        }
+        val old = tmp
+        tmp = npu
+        tmpWhere = "NPU"
+        runCatching { old.close() }
+        com.jainz.memc.core.DebugRecorder.event("3d", "Temporal part moved to the NPU")
+    }
+
     val width = VdaModel.WIDTH
     val height = VdaModel.HEIGHT
     private val plane = width * height
@@ -205,6 +230,7 @@ class VdaDepth private constructor(
     }
 
     private fun runWindow(inputs: List<Feat>): Array<FloatArray> {
+        maybeUseNpu()
         l3All.clear()
         l4All.clear()
         for (f in inputs) {
@@ -286,7 +312,10 @@ class VdaDepth private constructor(
                     onStep("Preparing the AI 3D model for this phone (${i + 1}/3, first time takes a few minutes)…")
                     sessions += ref.open(context, env) { options(libs) }
                 }
-                val vda = VdaDepth(env, sessions[0], sessions[1], sessions[2])
+                // The NPU version of the temporal part: compiled in the background the first time
+                // (the export starts on the CPU and moves over when it's ready).
+                NpuCompile.request(context.applicationContext, VdaModel.tmpNpu)
+                val vda = VdaDepth(context.applicationContext, env, sessions[0], sessions[1], sessions[2])
                 // Test run, so a broken setup fails here and not an hour into a film.
                 onStep("Testing the AI 3D model…")
                 vda.input.clear()
@@ -302,14 +331,13 @@ class VdaDepth private constructor(
             }
         }
 
-        /** Where the temporal part runs, for the status line. */
-        const val tmpWhere = "CPU"
-
         private fun cpuOptions() = OrtSession.SessionOptions().apply {
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
             // Four threads: more barely helps and heats the phone (CPU hit 97 °C with six).
             setIntraOpNumThreads(4)
         }
+
+        private fun npuOptions(libs: String) = options(libs)
 
         private fun options(libs: String) = OrtSession.SessionOptions().apply {
             addQnn(

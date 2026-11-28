@@ -89,6 +89,12 @@
         </provider>
 
         <!-- 60 fps export runs here so it keeps going with the screen off. -->
+        <!-- Compiles AI models for the NPU in its own process, so a stuck compile can be stopped. -->
+        <service
+            android:name=".stereo.NpuCompileService"
+            android:exported="false"
+            android:process=":npucompile" />
+
         <service
             android:name=".export.ExportService"
             android:exported="false"

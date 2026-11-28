@@ -64,6 +64,13 @@ class ModelRef(
         return session
     }
 
+    /** A compiled (NPU) copy of this model is on the phone. */
+    fun hasCompiledCopy(context: Context): Boolean {
+        val packed = bundledSize(context)
+        val size = if (packed > 0) packed else downloaded(context).length()
+        return File(dir(context), "${tag}_ctx_$size.onnx").exists()
+    }
+
     /** The model's bytes (from the APK, or the downloaded copy), for running it on the CPU. */
     fun bytes(context: Context): ByteArray =
         if (bundled(context)) context.assets.open(asset).use { it.readBytes() } else downloaded(context).readBytes()
