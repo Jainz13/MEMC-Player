@@ -1,0 +1,50 @@
+name: Depth model (2D to 3D)
+
+# Prepares Depth Anything V2 Small for the phone's NPU and publishes it to the "depth-model"
+# pre-release. The app downloads it from there the first time AI 3D is used.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "tools/depth/**"
+      - ".github/workflows/depth-model.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: depth-model
+  cancel-in-progress: true
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install tools
+        run: pip install -q numpy onnx onnxruntime onnxsim qai-hub
+      - name: Prepare the model
+        env:
+          QAI_HUB_API_TOKEN: ${{ secrets.QAI_HUB_API_TOKEN }}
+        run: |
+          if [ -n "$QAI_HUB_API_TOKEN" ]; then qai-hub configure --api_token "$QAI_HUB_API_TOKEN" > /dev/null; fi
+          python tools/depth/export_depth.py --out out --work work
+          cat out/depth-report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: depth-model
+          name: Depth model for 2D-to-3D (not an app release)
+          prerelease: true
+          make_latest: false
+          body: Depth Anything V2 Small (Apache-2.0), fixed to 518x294 for the Snapdragon NPU. See depth-report.md.
+          files: |
+            out/*.onnx
+            out/depth.json
+            out/depth-report.md
