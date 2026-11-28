@@ -137,6 +137,7 @@ class PlayerActivity : ComponentActivity() {
             onExport3d = if (!BuildConfig.TV && NpuFlow.isSnapdragon) { half -> exportCurrent3d(half) } else null,
         ).apply {
             canUseAi = !BuildConfig.TV && NpuFlow.isSnapdragon
+            reattachVideo = { glassesSurface?.let { player.setVideoSurfaceView(it) } }
             modelState = if (!canUseAi || DepthModel.ready(this@PlayerActivity)) "" else "missing"
         }
         // Frames are processed no larger than the screen: a 4K film on this panel is shown at

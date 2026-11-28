@@ -70,6 +70,8 @@ class ThreeDUi(
     /** 0..1 while the AI 3D model downloads, -1 otherwise. */
     var modelProgress by mutableFloatStateOf(-1f)
     var canUseAi by mutableStateOf(false)
+    /** Points the video at the glasses again (after the phone's view let go of it). */
+    var reattachVideo: (() -> Unit)? = null
 
     val blackout: Boolean get() = !BuildConfig.TV && (glassesActive || screenOff)
 }

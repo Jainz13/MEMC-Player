@@ -7,7 +7,6 @@ import ai.onnxruntime.TensorInfo
 import android.content.Context
 import android.system.Os
 import com.jainz.memc.memc.NpuFlow
-import java.io.File
 import java.nio.FloatBuffer
 import java.util.IdentityHashMap
 import kotlin.math.abs
@@ -277,14 +276,11 @@ class VdaDepth private constructor(
             try {
                 for ((i, ref) in VdaModel.refs.withIndex()) {
                     if (i == 1) {
-                        // The 32-frame temporal part runs once per 22 frames. The NPU compiler
-                        // doesn't finish with it in reasonable time (it stalled for over 20
-                        // minutes on a Galaxy S24), so it goes to the GPU when the GPU gives the
-                        // same answer and is faster, else to the CPU (about 1.4 s, and heat).
-                        onStep("Loading the AI 3D model on the GPU (2/3)…")
-                        val (session, where) = temporalSession(context, env, ref.bytes(context), libs)
-                        sessions += session
-                        tmpWhere = where
+                        // The 32-frame temporal part: the NPU compiler doesn't finish with it
+                        // (it stalled for 20+ minutes on a Galaxy S24 and on AI Hub), and Qualcomm's
+                        // GPU back end was slower than the CPU (1.36 s vs 1.22 s per window).
+                        onStep("Loading the AI 3D model (2/3)…")
+                        sessions += env.createSession(ref.bytes(context), cpuOptions())
                         continue
                     }
                     onStep("Preparing the AI 3D model for this phone (${i + 1}/3, first time takes a few minutes)…")
@@ -306,96 +302,13 @@ class VdaDepth private constructor(
             }
         }
 
-        /** Where the temporal part runs ("GPU" or "CPU"), for the status line. */
-        @Volatile var tmpWhere = "CPU"
-            private set
-
-        private const val PREFS = "vda"
-        private const val GPU_STATE = "tmp_gpu"
-
-        /**
-         * The temporal part on the GPU (Qualcomm's GPU back end) if it builds in time, matches the
-         * CPU's result and is faster; otherwise on the CPU. A GPU that failed once isn't tried again
-         * until the app is updated.
-         */
-        private fun temporalSession(context: Context, env: OrtEnvironment, model: ByteArray, libs: String): Pair<OrtSession, String> {
-            val cpu = env.createSession(model, cpuOptions())
-            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            val version = com.jainz.memc.BuildConfig.VERSION_NAME
-            val state = prefs.getString(GPU_STATE, "")
-            if (state == "failed:$version" || !File("$libs/libQnnGpu.so").exists()) return cpu to "CPU"
-            fun fail(why: String): Pair<OrtSession, String> {
-                prefs.edit().putString(GPU_STATE, "failed:$version").apply()
-                com.jainz.memc.core.DebugRecorder.event("3d", "Temporal part stays on the CPU: $why")
-                return cpu to "CPU"
-            }
-            // Building can hang inside the driver: give up after two minutes (that thread is left behind).
-            val built = java.util.concurrent.atomic.AtomicReference<Result<OrtSession>?>(null)
-            val t = Thread({
-                built.set(runCatching {
-                    env.createSession(model, OrtSession.SessionOptions().apply {
-                        addQnn(mapOf("backend_path" to "$libs/libQnnGpu.so"))
-                    })
-                })
-            }, "memc-vda-gpu").apply { isDaemon = true; start() }
-            t.join(120_000)
-            val gpu = built.get()?.getOrElse { return fail("the GPU back end refused it (${it.message})") }
-                ?: return fail("the GPU took more than 2 minutes to build it")
-            return try {
-                val shapeIn = { name: String -> (cpu.inputInfo[name]?.info as TensorInfo).shape }
-                val outShape = (cpu.outputInfo["path3"]?.info as TensorInfo).shape
-                val rnd = java.util.Random(1)
-                val inputs = listOf("l3", "l4").associateWith { name ->
-                    val shape = shapeIn(name)
-                    val n = shape.fold(1L) { a, b -> a * b }.toInt()
-                    val buf = NpuFlow.floats(n)
-                    repeat(n) { buf.put(rnd.nextGaussian().toFloat()) }
-                    buf.rewind()
-                    OnnxTensor.createTensor(env, buf, shape)
-                }
-                val n = outShape.fold(1L) { a, b -> a * b }.toInt()
-                val outCpu = NpuFlow.floats(n)
-                val outGpu = NpuFlow.floats(n)
-                val tCpu = OnnxTensor.createTensor(env, outCpu, outShape)
-                val tGpu = OnnxTensor.createTensor(env, outGpu, outShape)
-                var start = System.nanoTime()
-                cpu.run(inputs, mapOf("path3" to tCpu)).close()
-                val cpuMs = (System.nanoTime() - start) / 1e6
-                gpu.run(inputs, mapOf("path3" to tGpu)).close() // warm-up
-                start = System.nanoTime()
-                gpu.run(inputs, mapOf("path3" to tGpu)).close()
-                val gpuMs = (System.nanoTime() - start) / 1e6
-                var maxErr = 0.0
-                var maxVal = 1e-6
-                var bad = false
-                for (k in 0 until n) {
-                    val c = outCpu.get(k).toDouble()
-                    val g = outGpu.get(k).toDouble()
-                    if (g.isNaN() || g.isInfinite()) bad = true
-                    maxErr = maxOf(maxErr, abs(c - g))
-                    maxVal = maxOf(maxVal, abs(c))
-                }
-                (inputs.values + tCpu + tGpu).forEach { runCatching { it.close() } }
-                val rel = maxErr / maxVal
-                com.jainz.memc.core.DebugRecorder.event("3d", "Temporal part: CPU ${cpuMs.toInt()} ms, GPU ${gpuMs.toInt()} ms, GPU error ${"%.4f".format(java.util.Locale.US, rel)}")
-                when {
-                    bad || rel > 0.03 -> { gpu.close(); fail("the GPU's answer was off (error $rel)") }
-                    gpuMs > cpuMs -> { gpu.close(); cpu to "CPU" }
-                    else -> {
-                        prefs.edit().putString(GPU_STATE, "ok:$version").apply()
-                        cpu.close()
-                        gpu to "GPU"
-                    }
-                }
-            } catch (e: Throwable) {
-                runCatching { gpu.close() }
-                fail("the GPU run failed (${e.message})")
-            }
-        }
+        /** Where the temporal part runs, for the status line. */
+        const val tmpWhere = "CPU"
 
         private fun cpuOptions() = OrtSession.SessionOptions().apply {
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-            setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceIn(2, 6))
+            // Four threads: more barely helps and heats the phone (CPU hit 97 °C with six).
+            setIntraOpNumThreads(4)
         }
 
         private fun options(libs: String) = OrtSession.SessionOptions().apply {

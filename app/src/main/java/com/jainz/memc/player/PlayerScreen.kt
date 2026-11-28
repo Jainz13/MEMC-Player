@@ -356,7 +356,9 @@ fun PlayerScreen(
             factory = { ctx ->
                 PlayerView(ctx).apply {
                     useController = false
-                    this.player = player
+                    // Not while the video is on the glasses: attaching would take the picture
+                    // away from them (black glasses until they were reconnected).
+                    this.player = if (threeD?.glassesActive == true) null else player
                     setShutterBackgroundColor(AColor.BLACK)
                     setKeepContentOnPlayerReset(true)
                     setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
@@ -368,7 +370,11 @@ fun PlayerScreen(
             update = { view ->
                 // On glasses the video is drawn there; this view lets go of the player.
                 val wanted = if (threeD?.glassesActive == true) null else player
-                if (view.player !== wanted) view.player = wanted
+                if (view.player !== wanted) {
+                    view.player = wanted
+                    // Letting go clears the player's picture target: give it back to the glasses.
+                    if (wanted == null) threeD?.reattachVideo?.invoke()
+                }
                 view.resizeMode = resizeMode
                 applyGeometry(view)
                 view.subtitleView?.apply {

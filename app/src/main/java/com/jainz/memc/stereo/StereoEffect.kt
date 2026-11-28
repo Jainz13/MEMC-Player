@@ -222,6 +222,7 @@ private class StereoShaderProgram(
         smoothProgram.setSamplerTexIdUniform("uPrev", smoothTex[smoothIndex], 1)
         smoothProgram.setFloatsUniform("uTexel", floatArrayOf(1f / depthW, 1f / depthH))
         smoothProgram.setFloatUniform("uMix", 1f)
+        smoothProgram.setFloatUniform("uBlur", 0f)
         smoothProgram.bindAttributesAndUniforms()
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         smoothIndex = next
@@ -295,6 +296,7 @@ private class StereoShaderProgram(
         smoothProgram.setSamplerTexIdUniform("uPrev", smoothTex[smoothIndex], 1)
         smoothProgram.setFloatsUniform("uTexel", floatArrayOf(1f / depthW, 1f / depthH))
         smoothProgram.setFloatUniform("uMix", if (!haveDepth || jumped) 1f else mix)
+        smoothProgram.setFloatUniform("uBlur", if (npu != null) 0f else 1f)
         smoothProgram.bindAttributesAndUniforms()
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         smoothIndex = next
