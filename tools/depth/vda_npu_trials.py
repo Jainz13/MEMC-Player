@@ -9,6 +9,10 @@ as the model on the CPU, and compiles and times them on AI Hub in parallel (30 m
   tmp_unrolled whole part, attention written out frame by frame with plain multiply-and-sum
                (no huge batched matrix products, no layout shuffles)
 
+Round 2 (after none of the attention forms compiled): single ops in the model's 3-D token
+layout (GroupNorm, Linear, feed-forward), and the attention modules rewritten in 4-D layout with
+1x1 convolutions (mm3_nchw alone, tmp_nchw for the whole part).
+
 Writes trials/trials-report.md and the variant models.
 """
 
@@ -94,6 +98,130 @@ class RefineOnly(torch.nn.Module):
         return s.refinenet3(path_4, l3rn, size=(base.PH * 2, base.PW * 2))
 
 
+# ---- Round 2: the attention modules in plain 4-D (frames, channels, height, width) layout ----
+# Round 1 showed a single attention module never compiles, whatever form the attention itself
+# takes, while the convolutions compile in a minute. What the forms share: 3-D token tensors
+# (32 x 3108 x 64) going through Linear layers, GroupNorm and LayerNorm. Here everything is
+# 1x1 convolutions and norms written out on 4-D tensors, the layout the NPU is built around.
+
+def conv1x1(x, lin):
+    return F.conv2d(x, lin.weight[:, :, None, None], lin.bias)
+
+
+def ln_c(x, ln):
+    m = x.mean(1, keepdim=True)
+    v = ((x - m) ** 2).mean(1, keepdim=True)
+    return (x - m) / torch.sqrt(v + ln.eps) * ln.weight[None, :, None, None] + ln.bias[None, :, None, None]
+
+
+def gn(x, g):
+    f, C, H, W = x.shape
+    G = g.num_groups
+    y = x.reshape(f, G, C // G, H * W)
+    m = y.mean((2, 3), keepdim=True)
+    v = ((y - m) ** 2).mean((2, 3), keepdim=True)
+    y = ((y - m) / torch.sqrt(v + g.eps)).reshape(f, C, H, W)
+    return y * g.weight[None, :, None, None] + g.bias[None, :, None, None]
+
+
+def attn_nchw(x, a, f):
+    assert a.group_norm is None
+    _, C, H, W = x.shape
+    x = x + a.pos_encoder.pe[0, :f][:, :, None, None].to(x.dtype)
+    h = a.heads
+    e = C // h
+    q = (conv1x1(x, a.to_q) * a.scale).reshape(f, h, e, H * W)
+    k = conv1x1(x, a.to_k).reshape(f, h, e, H * W)
+    v = conv1x1(x, a.to_v).reshape(f, h, e, H * W)
+    s = torch.cat([(q * k[j:j + 1]).sum(2, keepdim=True) for j in range(f)], dim=2)  # (f, h, f, HW)
+    p = torch.softmax(s, dim=2)
+    o = p[:, :, 0:1] * v[0:1]
+    for j in range(1, f):
+        o = o + p[:, :, j:j + 1] * v[j:j + 1]
+    return conv1x1(o.reshape(f, C, H, W), a.to_out[0])
+
+
+def ff_nchw(x, ffm):
+    y = conv1x1(x, ffm.net[0].proj)
+    y, gate = y.chunk(2, dim=1)
+    return conv1x1(y * F.gelu(gate), ffm.net[2])
+
+
+def tm_nchw(tm, x):
+    t = tm.temporal_transformer
+    f = x.shape[0]
+    h = conv1x1(gn(x, t.norm), t.proj_in)
+    for blk in t.transformer_blocks:
+        for a, n in zip(blk.attention_blocks, blk.norms):
+            h = attn_nchw(ln_c(h, n), a, f) + h
+        h = ff_nchw(ln_c(h, blk.ff_norm), blk.ff) + h
+    return conv1x1(h, t.proj_out) + x
+
+
+class MotionNchw(torch.nn.Module):
+    def __init__(self, m):
+        super().__init__()
+        self.mm = m.head.motion_modules[3]
+
+    def forward(self, x):
+        return tm_nchw(self.mm, x)
+
+
+class TmpNchw(torch.nn.Module):
+    """The whole 32-frame part with the attention modules in 4-D layout."""
+
+    def __init__(self, m):
+        super().__init__()
+        self.m = m
+
+    def forward(self, l3, l4):
+        head = self.m.head
+        s = head.scratch
+        l3 = tm_nchw(head.motion_modules[0], l3)
+        l4 = tm_nchw(head.motion_modules[1], l4)
+        l3rn = s.layer3_rn(l3)
+        l4rn = s.layer4_rn(l4)
+        path_4 = tm_nchw(head.motion_modules[2], s.refinenet4(l4rn, size=l3rn.shape[2:]))
+        path_3 = s.refinenet3(path_4, l3rn, size=(base.PH * 2, base.PW * 2))
+        return tm_nchw(head.motion_modules[3], path_3)
+
+
+class OnlyGroupNorm(torch.nn.Module):
+    def __init__(self, m):
+        super().__init__()
+        self.g = m.head.motion_modules[3].temporal_transformer.norm
+
+    def forward(self, x):
+        return self.g(x)
+
+
+class OnlyLinear3d(torch.nn.Module):
+    """A Linear layer on 3-D tokens (32 x 3108 x 64), as the model does it."""
+
+    def __init__(self, m):
+        super().__init__()
+        self.lin = m.head.motion_modules[3].temporal_transformer.proj_in
+
+    def forward(self, x):
+        f, C, H, W = x.shape
+        t = x.permute(0, 2, 3, 1).reshape(f, H * W, C)
+        return self.lin(t)
+
+
+class OnlyFeedForward3d(torch.nn.Module):
+    """LayerNorm + GEGLU feed-forward on 3-D tokens, as the model does it."""
+
+    def __init__(self, m):
+        super().__init__()
+        blk = m.head.motion_modules[3].temporal_transformer.transformer_blocks[0]
+        self.norm, self.ff = blk.ff_norm, blk.ff
+
+    def forward(self, x):
+        f, C, H, W = x.shape
+        t = x.permute(0, 2, 3, 1).reshape(f, H * W, C)
+        return self.ff(self.norm(t))
+
+
 def export(module, inputs, names, path):
     torch.onnx.export(module, inputs, path, input_names=names, output_names=["out"], opset_version=17,
                       do_constant_folding=True, dynamo=False)
@@ -149,14 +277,19 @@ def main():
         variants.append((name, path))
         print(lines[-1], flush=True)
 
+    # Round 1 (Galaxy S24 Ultra): refine_only compiled in a minute (5.7 ms); mm3_orig, tmp_4d and
+    # tmp_unrolled were all still compiling after 30 minutes.
     mm.TemporalAttention.forward = original
-    add("mm3_orig", MotionOnly(m), [p3], ["x"])
-    add("refine_only", RefineOnly(m), [l3, l4], ["l3", "l4"])
-    mm.TemporalAttention.forward = attention_4d
-    add("tmp_4d", base.Tmp(m), [l3, l4], ["l3", "l4"], compare_full=True)
-    mm.TemporalAttention.forward = attention_unrolled
-    add("tmp_unrolled", base.Tmp(m), [l3, l4], ["l3", "l4"], compare_full=True)
-    mm.TemporalAttention.forward = original
+    with torch.no_grad():
+        want_mm3 = MotionOnly(m)(p3).numpy()
+    add("t_groupnorm", OnlyGroupNorm(m), [p3], ["x"])
+    add("t_linear3d", OnlyLinear3d(m), [p3], ["x"])
+    add("t_ff3d", OnlyFeedForward3d(m), [p3], ["x"])
+    add("mm3_nchw", MotionNchw(m), [p3], ["x"])
+    s_mm = ort.InferenceSession(os.path.join(OUT, "mm3_nchw.onnx"), providers=["CPUExecutionProvider"])
+    got = s_mm.run(None, {"x": p3.numpy()})[0]
+    lines.append(f"  mm3_nchw vs the original module: {float(np.abs(got - want_mm3).max() / max(np.abs(want_mm3).max(), 1e-6)):.2e}")
+    add("tmp_nchw", TmpNchw(m), [l3, l4], ["l3", "l4"], compare_full=True)
 
     lines += ["", "## AI Hub", ""]
     if not os.environ.get("QAI_HUB_API_TOKEN"):
