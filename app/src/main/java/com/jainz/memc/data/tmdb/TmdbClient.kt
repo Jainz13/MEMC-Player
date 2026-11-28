@@ -40,6 +40,22 @@ data class SearchResult(
 
 class TmdbClient(private val settings: Settings) {
 
+    companion object {
+        // Discover: what kind of titles
+        const val MOVIES = "movies"
+        const val SERIES = "series"
+        const val ANIME = "anime"
+        // Discover: which list
+        const val POPULAR = "popular"
+        const val TRENDING = "trending"
+        const val TOP_RATED = "top_rated"
+        /** Movies in cinemas now / series with new episodes this week. */
+        const val NOW = "now"
+        /** Movies coming soon / series airing today. */
+        const val UPCOMING = "upcoming"
+        val CATALOGS = listOf(POPULAR, TRENDING, TOP_RATED, NOW, UPCOMING)
+    }
+
     private val http = com.jainz.memc.core.Http.client
 
     val hasKey: Boolean get() = settings.tmdbKey.value.isNotBlank()
@@ -100,6 +116,74 @@ class TmdbClient(private val settings: Settings) {
                 isTv = tv,
             )
         }.filter { it.title.isNotBlank() }
+    }
+
+    /** One page of a Discover list. */
+    data class CatalogPage(val items: List<SearchResult>, val page: Int, val totalPages: Int)
+
+    private fun titles(json: JSONObject, tv: Boolean): List<SearchResult> =
+        json.optJSONArray("results").objects().map {
+            SearchResult(
+                id = it.getLong("id"),
+                title = it.optString(if (tv) "name" else "title"),
+                year = it.optString(if (tv) "first_air_date" else "release_date").take(4).toIntOrNull(),
+                overview = it.optStringOrNull("overview"),
+                posterPath = it.optStringOrNull("poster_path"),
+                isTv = tv,
+            )
+        }.filter { it.title.isNotBlank() && it.posterPath != null }
+
+    /**
+     * A Discover list. [kind] is MOVIES, SERIES or ANIME; [catalog] one of [CATALOGS];
+     * [genre] a TMDB genre id or null. TMDB's ready-made lists are used where they exist,
+     * its "discover" search otherwise (any genre filter, and anime).
+     */
+    suspend fun catalog(kind: String, catalog: String, genre: Int?, page: Int): CatalogPage {
+        val tv = kind != MOVIES
+        val type = if (tv) "tv" else "movie"
+        val p = page.toString()
+        val anime = kind == ANIME
+        val json = if (genre == null && !anime) {
+            when (catalog) {
+                TRENDING -> get("/trending/$type/week", mapOf("page" to p))
+                TOP_RATED -> get("/$type/top_rated", mapOf("page" to p))
+                NOW -> get(if (tv) "/tv/on_the_air" else "/movie/now_playing", mapOf("page" to p))
+                UPCOMING -> get(if (tv) "/tv/airing_today" else "/movie/upcoming", mapOf("page" to p))
+                else -> get("/$type/popular", mapOf("page" to p))
+            }
+        } else {
+            val today = java.time.LocalDate.now().toString()
+            val dateKey = if (tv) "first_air_date" else "primary_release_date"
+            val params = mutableMapOf<String, String?>("page" to p, "include_adult" to "false")
+            val genres = listOfNotNull(if (anime) 16 else null, genre).distinct()
+            if (genres.isNotEmpty()) params["with_genres"] = genres.joinToString(",")
+            if (anime) params["with_original_language"] = "ja"
+            when (catalog) {
+                TOP_RATED -> {
+                    params["sort_by"] = "vote_average.desc"
+                    params["vote_count.gte"] = if (anime) "150" else "300"
+                }
+                NOW -> {
+                    params["sort_by"] = "popularity.desc"
+                    params["$dateKey.lte"] = today
+                    params["$dateKey.gte"] = java.time.LocalDate.now().minusDays(45).toString()
+                }
+                UPCOMING -> {
+                    params["sort_by"] = "popularity.desc"
+                    params["$dateKey.gte"] = java.time.LocalDate.now().plusDays(1).toString()
+                }
+                else -> params["sort_by"] = "popularity.desc"
+            }
+            get("/discover/$type", params)
+        }
+        return CatalogPage(titles(json, tv), json.optInt("page", page), json.optInt("total_pages", 1).coerceAtMost(500))
+    }
+
+    /** Genre names and ids for movies or shows, in the metadata language. */
+    suspend fun genres(tv: Boolean): List<Pair<Int, String>> {
+        val json = get(if (tv) "/genre/tv/list" else "/genre/movie/list")
+        return json.optJSONArray("genres").objects().map { it.getInt("id") to it.optString("name") }
+            .filter { it.second.isNotBlank() }
     }
 
     /** Movies and shows matching a name, most popular first. */

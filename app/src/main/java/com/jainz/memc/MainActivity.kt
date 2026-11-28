@@ -100,7 +100,7 @@ private val tabs = listOf(
     Tab(Routes.MOVIES, "Movies", Icons.Filled.Movie),
     Tab(Routes.SHOWS, "Shows", Icons.Filled.Tv),
     Tab(Routes.LIBRARY, "Library", Icons.Filled.Folder),
-    Tab(Routes.EXPLORE, "Explore", Icons.Filled.Explore),
+    Tab(Routes.EXPLORE, "Discover", Icons.Filled.Explore),
     Tab(Routes.SEARCH, "Search", Icons.Filled.Search),
 )
 
@@ -115,6 +115,7 @@ object Routes {
     const val SOURCES = "sources"
     const val EXPLORE = "explore"
     const val BACKUP = "backup"
+    fun discover(kind: String, catalog: String) = "discover?k=$kind&c=$catalog"
     /** Sources for one title: [query] is what to search for, [title] what to show on top. */
     fun releases(title: String, query: String, tv: Boolean) =
         "releases?t=" + android.net.Uri.encode(title) + "&q=" + android.net.Uri.encode(query) + "&tv=$tv"
@@ -253,6 +254,15 @@ private fun AppRoot() {
                 }
                 composable(Routes.SOURCES) { SourcesScreen(nav) }
                 composable(Routes.BACKUP) { com.jainz.memc.ui.transfer.BackupScreen(nav) }
+                composable(
+                    "discover?k={k}&c={c}",
+                    arguments = listOf(
+                        navArgument("k") { type = NavType.StringType; defaultValue = "movies" },
+                        navArgument("c") { type = NavType.StringType; defaultValue = "popular" },
+                    ),
+                ) {
+                    com.jainz.memc.ui.explore.DiscoverScreen(nav, it.arguments?.getString("k") ?: "movies", it.arguments?.getString("c") ?: "popular")
+                }
                 composable(
                     "movie/{id}",
                     arguments = listOf(navArgument("id") { type = NavType.LongType }),

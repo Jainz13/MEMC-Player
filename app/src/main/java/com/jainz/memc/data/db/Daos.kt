@@ -157,6 +157,9 @@ interface VideoDao {
 
 @Dao
 interface MetaDao {
+    /** TMDB ids of the movies and shows in the library (Discover marks them). */
+    @Query("SELECT tmdbId FROM movies") fun movieIds(): Flow<List<Long>>
+    @Query("SELECT tmdbId FROM shows") fun showIds(): Flow<List<Long>>
     @Upsert suspend fun upsertMovie(m: MovieEntity)
     @Upsert suspend fun upsertShow(s: ShowEntity)
     @Upsert suspend fun upsertSeasons(list: List<SeasonEntity>)

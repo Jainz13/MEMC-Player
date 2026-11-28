@@ -109,172 +109,10 @@ internal fun copyLink(context: Context, link: String, quiet: Boolean = false) {
 
 // ---- Explore: what is trending ------------------------------------------------------------------------
 
-/** Trending lists, kept for half an hour so the tab opens instantly. */
-private object Trending {
-    var movies: List<Title> = emptyList()
-    var shows: List<Title> = emptyList()
-    var loadedAt = 0L
-    val fresh get() = movies.isNotEmpty() && System.currentTimeMillis() - loadedAt < 30 * 60_000
-}
-
-private fun releaseQuery(t: Title) = if (t.isTv) t.title else listOfNotNull(t.title, t.year?.toString()).joinToString(" ")
+internal fun releaseQuery(t: Title) = if (t.isTv) t.title else listOfNotNull(t.title, t.year?.toString()).joinToString(" ")
 
 @Composable
-fun ExploreScreen(nav: NavController) {
-    val g = MemcApp.graph
-    val scope = rememberCoroutineScope()
-    val tmdbKey by g.settings.tmdbKey.flow.collectAsStateWithLifecycle()
-    var movies by remember { mutableStateOf(Trending.movies) }
-    var shows by remember { mutableStateOf(Trending.shows) }
-    var loading by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var query by rememberSaveable { mutableStateOf("") }
-    var matches by remember { mutableStateOf<List<Title>?>(null) }
-    var matching by remember { mutableStateOf(false) }
-    var choosing by remember { mutableStateOf(false) }
-
-    LaunchedEffect(tmdbKey) {
-        if (tmdbKey.isBlank() || Trending.fresh) return@LaunchedEffect
-        loading = true
-        error = null
-        runCatching {
-            coroutineScope {
-                val m = async { g.tmdb.trending(tv = false) }
-                val s = async { g.tmdb.trending(tv = true) }
-                m.await() to s.await()
-            }
-        }.onSuccess { (m, s) ->
-            Trending.movies = m; Trending.shows = s; Trending.loadedAt = System.currentTimeMillis()
-            movies = m; shows = s
-        }.onFailure { error = it.message ?: "Could not load what is trending" }
-        loading = false
-    }
-
-    fun search() {
-        val words = query.trim()
-        if (words.isBlank()) return
-        if (tmdbKey.isBlank()) {
-            // Without TMDB there are no titles to pick from: search the sources directly.
-            nav.navigate(Routes.releases(words, words, false))
-            return
-        }
-        matching = true
-        scope.launch {
-            matches = runCatching { g.tmdb.searchAny(words) }.getOrDefault(emptyList())
-            matching = false
-        }
-    }
-
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
-        item {
-            Row(
-                Modifier.statusBarsPadding().padding(start = 20.dp, end = 8.dp, top = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Explore", style = MaterialTheme.typography.headlineLarge, modifier = Modifier.weight(1f))
-                IconButton(onClick = { nav.navigate(Routes.SOURCES) }) { Icon(Icons.Filled.RssFeed, "My sources", tint = Palette.TextDim) }
-                IconButton(onClick = { choosing = true }) { Icon(Icons.Filled.Tune, "Search providers", tint = Palette.TextDim) }
-            }
-        }
-        item {
-            TextField(
-                value = query, onValueChange = { query = it; if (it.isBlank()) matches = null },
-                placeholder = { Text("Find a movie or show…") },
-                singleLine = true,
-                shape = RoundedCornerShape(50),
-                leadingIcon = { Icon(Icons.Filled.Search, null) },
-                trailingIcon = {
-                    if (query.isNotEmpty()) {
-                        IconButton(onClick = { query = ""; matches = null }) { Icon(Icons.Filled.Close, "Clear") }
-                    }
-                },
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Palette.SurfaceHigh, unfocusedContainerColor = Palette.SurfaceHigh,
-                    focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
-                ),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { search() }),
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-            )
-        }
-
-        val found = matches
-        when {
-            matching -> item { Spinner() }
-            found != null -> {
-                if (found.isEmpty()) {
-                    item {
-                        EmptyMessage("No title found", "TMDB has no movie or show called \"${query.trim()}\".") {
-                            OutlinedButton(onClick = { nav.navigate(Routes.releases(query.trim(), query.trim(), false)) }) {
-                                Text("Search the sources for these words")
-                            }
-                        }
-                    }
-                }
-                items(found, key = { (if (it.isTv) "t" else "m") + it.id }) { t ->
-                    Row(
-                        Modifier.fillMaxWidth()
-                            .clickable { nav.navigate(Routes.releases(t.title, releaseQuery(t), t.isTv)) }
-                            .padding(horizontal = 20.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        PosterCard(Tmdb.poster(t.posterPath), "", width = 56.dp) {
-                            nav.navigate(Routes.releases(t.title, releaseQuery(t), t.isTv))
-                        }
-                        Column(Modifier.padding(start = 14.dp)) {
-                            Text(t.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Text(
-                                listOfNotNull(if (t.isTv) "TV show" else "Movie", t.year?.toString()).joinToString(" · "),
-                                style = MaterialTheme.typography.bodySmall, color = Palette.TextDim,
-                            )
-                        }
-                    }
-                }
-            }
-            tmdbKey.isBlank() -> item {
-                EmptyMessage(
-                    "Trending needs TMDB",
-                    "Add your TMDB key in Settings to see trending movies and shows here. " +
-                        "The search box above still searches the sources directly.",
-                ) { OutlinedButton(onClick = { nav.navigate(Routes.SETTINGS) }) { Text("Open Settings") } }
-            }
-            loading && movies.isEmpty() -> item { Spinner() }
-            error != null && movies.isEmpty() -> item { EmptyMessage("Couldn't load trending", error ?: "") }
-            else -> {
-                item {
-                    Shelf("Trending movies") {
-                        items(movies, key = { it.id }) { t ->
-                            PosterCard(Tmdb.poster(t.posterPath), t.title, subtitle = t.year?.toString()) {
-                                nav.navigate(Routes.releases(t.title, releaseQuery(t), false))
-                            }
-                        }
-                    }
-                }
-                item {
-                    Shelf("Trending TV shows") {
-                        items(shows, key = { it.id }) { t ->
-                            PosterCard(Tmdb.poster(t.posterPath), t.title, subtitle = t.year?.toString()) {
-                                nav.navigate(Routes.releases(t.title, releaseQuery(t), true))
-                            }
-                        }
-                    }
-                }
-                item {
-                    Text(
-                        "Tap a title to see the available sources, with quality and size. " +
-                            "Sources open in your torrent app. Only download what you have the right to.\n" + Tmdb.ATTRIBUTION,
-                        style = MaterialTheme.typography.bodySmall, color = Palette.TextFaint,
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp),
-                    )
-                }
-            }
-        }
-    }
-    if (choosing) ProvidersDialog { choosing = false }
-}
-
-@Composable
-private fun Spinner() {
+internal fun Spinner() {
     Row(Modifier.fillMaxWidth().padding(40.dp), horizontalArrangement = Arrangement.Center) { CircularProgressIndicator() }
 }
 
@@ -422,7 +260,7 @@ private fun ReleaseRow(r: SearchResult) {
 
 /** Switches the built-in search providers on and off. */
 @Composable
-private fun ProvidersDialog(onDismiss: () -> Unit) {
+internal fun ProvidersDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
     var enabled by remember { mutableStateOf(TorrentSearch.enabled(context)) }
     val own = remember { Feeds.list(context).filter { it.needsQuery || it.torznab } }

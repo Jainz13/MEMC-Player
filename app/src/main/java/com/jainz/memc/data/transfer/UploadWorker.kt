@@ -28,7 +28,7 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         val source = g.db.sources().get(inputData.getLong(KEY_SOURCE, -1)) ?: return Result.failure()
         val folder = inputData.getString(KEY_FOLDER).orEmpty()
         val move = inputData.getBoolean(KEY_MOVE, false)
-        val videos = ids.mapNotNull { g.db.videos().get(it) }.filter { !it.uri.startsWith("smb://") }
+        val videos = ids.toList().mapNotNull { g.db.videos().get(it) }.filter { !it.uri.startsWith("smb://") }
         if (videos.isEmpty()) return Result.success()
 
         val verb = if (move) "Moving" else "Copying"
