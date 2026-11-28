@@ -175,4 +175,6 @@ dependencies {
     "tvCompileOnly"(libs.onnxruntime.qnn)
     implementation(libs.coroutines.android)
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+    // Phone folders picked with Android's folder picker (automatic backups).
+    implementation("androidx.documentfile:documentfile:1.0.1")
 }

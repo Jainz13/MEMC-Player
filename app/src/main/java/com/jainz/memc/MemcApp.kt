@@ -40,6 +40,8 @@ class MemcApp : Application(), SingletonImageLoader.Factory {
         graph = AppGraph(this)
         CrashLog.collect(this)
         DebugRecorder.resume(this)
+        // Automatic backups to network shares (no-op when none are set up).
+        runCatching { com.jainz.memc.data.transfer.SyncWorker.schedule(this) }
         if (graph.settings.scanOnStart.value) {
             ScanWorker.enqueue(this, onlyIfStale = true)
         }

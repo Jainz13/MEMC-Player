@@ -206,24 +206,34 @@ class SmbPool(private val db: AppDatabase) {
     }
 
     /** Copies a file from the phone to the share, creating folders on the way. */
-    fun upload(loc: SmbLocation, local: java.io.File, onProgress: (Long) -> Unit) = withShare(loc) { share ->
-        var dir = ""
-        for (part in loc.path.trim('/').split('/').dropLast(1)) {
-            dir = if (dir.isEmpty()) part else "$dir\\$part"
-            if (!share.folderExists(dir)) share.mkdir(dir)
-        }
+    fun upload(loc: SmbLocation, local: java.io.File, onProgress: (Long) -> Unit) =
+        upload(loc, { local.inputStream() }, onProgress)
+
+    /**
+     * Copies a stream to the share, creating folders on the way. The data goes into a hidden
+     * ".name.part" file that is renamed when complete, so a cut-off upload never looks like a
+     * finished video (and the library never picks it up). [openInput] may be called again if
+     * the connection drops and the copy restarts.
+     */
+    fun upload(loc: SmbLocation, openInput: () -> java.io.InputStream, onProgress: (Long) -> Unit) = withShare(loc) { share ->
+        val finalPath = loc.smbPath
+        val parent = finalPath.substringBeforeLast('\\', "")
+        mkdirs(share, parent)
+        val name = finalPath.substringAfterLast('\\')
+        val partPath = (if (parent.isEmpty()) "" else "$parent\\") + ".$name.part"
         share.openFile(
-            loc.smbPath,
-            EnumSet.of(AccessMask.GENERIC_WRITE),
+            partPath,
+            EnumSet.of(AccessMask.GENERIC_WRITE, AccessMask.DELETE),
             null,
             SMB2ShareAccess.ALL,
             SMB2CreateDisposition.FILE_OVERWRITE_IF,
             null,
         ).use { out ->
-            local.inputStream().use { input ->
+            openInput().use { input ->
                 val buffer = ByteArray(1 shl 20)
                 var offset = 0L
                 while (true) {
+                    if (Thread.currentThread().isInterrupted) throw InterruptedException()
                     val n = input.read(buffer)
                     if (n <= 0) break
                     var written = 0
@@ -234,7 +244,24 @@ class SmbPool(private val db: AppDatabase) {
                     onProgress(offset)
                 }
             }
+            out.rename(finalPath, true)
         }
+    }
+
+    private fun mkdirs(share: DiskShare, dirPath: String) {
+        var dir = ""
+        for (part in dirPath.split('\\').filter { it.isNotEmpty() }) {
+            dir = if (dir.isEmpty()) part else "$dir\\$part"
+            if (!share.folderExists(dir)) share.mkdir(dir)
+        }
+    }
+
+    /** Creates a folder (and its parents) on the share. */
+    fun mkdirs(loc: SmbLocation) = withShare(loc) { share -> mkdirs(share, loc.smbPath) }
+
+    /** Size of a file on the share, or null when there is no such file. */
+    fun remoteSize(loc: SmbLocation): Long? = withShare(loc) { share ->
+        if (share.fileExists(loc.smbPath)) share.getFileInformation(loc.smbPath).standardInformation.endOfFile else null
     }
 
     /** Permanently deletes a file on the share. */

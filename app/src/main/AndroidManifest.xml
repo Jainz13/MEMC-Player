@@ -100,5 +100,11 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Uploads and automatic backups to network shares run as WorkManager jobs. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+
     </application>
 </manifest>

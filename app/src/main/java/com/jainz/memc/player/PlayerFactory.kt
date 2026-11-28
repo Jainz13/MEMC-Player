@@ -32,8 +32,15 @@ import java.util.Locale
 @UnstableApi
 object PlayerFactory {
 
-    fun create(context: Context, smb: SmbPool, settings: Settings, picture: PictureControl? = null): ExoPlayer {
+    fun create(
+        context: Context,
+        smb: SmbPool,
+        settings: Settings,
+        picture: PictureControl? = null,
+        hdrMode: Int = settings.hdrMode.value,
+    ): ExoPlayer {
         val renderers = DefaultRenderersFactory(context)
+            .setMediaCodecSelector(HdrMode.codecSelector(hdrMode))
             // Normally the phone's own decoders first and FFmpeg only for formats they can't handle;
             // "Always use FFmpeg for audio" flips that for audio.
             .setExtensionRendererMode(

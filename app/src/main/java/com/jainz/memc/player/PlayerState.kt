@@ -116,6 +116,12 @@ class PlayerState(val player: ExoPlayer) {
     // ---- Helpers for labels -----------------------------------------------------
 
     val videoFormat: Format? get() = videoFormatSeen ?: player.videoFormat
+
+    /** The library's tags for the playing file ("4K|DV|HEVC"), set by the player. */
+    var fileTech by mutableStateOf("")
+
+    /** HDR kind of what is playing, using the file's tags when the stream doesn't say. */
+    fun hdr(): String? = hdrLabel(videoFormat, fileTech)
     val audioFormat: Format? get() = player.audioFormat
 
     companion object {
@@ -173,14 +179,47 @@ class PlayerState(val player: ExoPlayer) {
         /** Set by the player when Auto HDR flagged the current SDR video as HDR. */
         @Volatile var autoHdrActive = false
 
-        fun hdrLabel(f: Format?): String? {
-            val t = f?.colorInfo?.colorTransfer ?: return null
+        /**
+         * "Dolby Vision", "HDR10 / HDR10+", "HLG", "Auto HDR" or null for SDR. Dolby Vision is
+         * recognised by its track type or codec string first: those tracks often carry no
+         * colour information at all, which used to hide the badge for them.
+         */
+        fun hdrLabel(f: Format?, fileTech: String = ""): String? {
+            if (f == null) return null
+            val codecs = f.codecs?.lowercase().orEmpty()
+            val tags = fileTech.split('|')
+            if (f.sampleMimeType == MimeTypes.VIDEO_DOLBY_VISION ||
+                codecs.startsWith("dvhe") || codecs.startsWith("dvh1") || codecs.startsWith("dav1")
+            ) return "Dolby Vision"
+            val t = f.colorInfo?.colorTransfer
             return when {
-                f.sampleMimeType == MimeTypes.VIDEO_DOLBY_VISION -> "Dolby Vision"
                 t == C.COLOR_TRANSFER_ST2084 && autoHdrActive -> "Auto HDR"
                 t == C.COLOR_TRANSFER_ST2084 -> "HDR10 / HDR10+"
                 t == C.COLOR_TRANSFER_HLG -> "HLG"
+                // No colour information in the stream: trust what the scan found in the file.
+                t == null && "DV" in tags -> "Dolby Vision"
+                t == null && ("HDR10+" in tags || "HDR10" in tags || "HDR" in tags) -> "HDR10 / HDR10+"
+                autoHdrActive -> "Auto HDR"
                 else -> null
+            }
+        }
+
+        /** Dolby Vision profile ("Profile 8.1") from the codec string, if the stream says. */
+        fun dvProfile(f: Format?): String? {
+            val c = f?.codecs?.lowercase() ?: return null
+            if (!(c.startsWith("dvhe") || c.startsWith("dvh1") || c.startsWith("dav1"))) return null
+            val p = c.split('.').getOrNull(1)?.toIntOrNull() ?: return null
+            val compat = f.colorInfo?.colorTransfer
+            return when (p) {
+                8 -> "Profile 8" + when (compat) {
+                    C.COLOR_TRANSFER_ST2084 -> ".1 (HDR10 compatible)"
+                    C.COLOR_TRANSFER_HLG -> ".4 (HLG compatible)"
+                    else -> ""
+                }
+                5 -> "Profile 5 (Dolby Vision only)"
+                7 -> "Profile 7 (dual layer)"
+                10 -> "Profile 10 (AV1)"
+                else -> "Profile $p"
             }
         }
 

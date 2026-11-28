@@ -68,6 +68,10 @@ class Settings(context: Context) {
     // ---- Video ----
     /** 0 = fit, 1 = crop to fill, 2 = stretch */
     val defaultZoom = int("default_zoom", 0)
+    /** Automatic backups from phone folders to network shares (JSON, see BackupRules). */
+    val backupRules = string("backup_rules", "[]")
+    /** HDR output: 0 Auto, 1 Dolby Vision, 2 HDR10 / HDR10+ (base layer), 3 SDR. See [HdrMode]. */
+    val hdrMode = int("hdr_mode", 0)
     /** Switch the display to the video's frame rate when it can do so without a black flash. */
     val matchFrameRate = bool("match_frame_rate", true)
 

@@ -114,6 +114,7 @@ object Routes {
     const val UNIDENTIFIED = "unidentified"
     const val SOURCES = "sources"
     const val EXPLORE = "explore"
+    const val BACKUP = "backup"
     /** Sources for one title: [query] is what to search for, [title] what to show on top. */
     fun releases(title: String, query: String, tv: Boolean) =
         "releases?t=" + android.net.Uri.encode(title) + "&q=" + android.net.Uri.encode(query) + "&tv=$tv"
@@ -251,6 +252,7 @@ private fun AppRoot() {
                     )
                 }
                 composable(Routes.SOURCES) { SourcesScreen(nav) }
+                composable(Routes.BACKUP) { com.jainz.memc.ui.transfer.BackupScreen(nav) }
                 composable(
                     "movie/{id}",
                     arguments = listOf(navArgument("id") { type = NavType.LongType }),

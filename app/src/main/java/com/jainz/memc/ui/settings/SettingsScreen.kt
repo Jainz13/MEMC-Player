@@ -97,6 +97,7 @@ fun SettingsScreen(nav: NavController) {
     val seekStep by st.seekStepSec.flow.collectAsStateWithLifecycle()
     val subScale by st.subtitleScale.flow.collectAsStateWithLifecycle()
     val zoom by st.defaultZoom.flow.collectAsStateWithLifecycle()
+    val hdrMode by st.hdrMode.flow.collectAsStateWithLifecycle()
     val matchFps by st.matchFrameRate.flow.collectAsStateWithLifecycle()
     val audioLang by st.audioLanguage.flow.collectAsStateWithLifecycle()
     val ffmpegAudio by st.ffmpegAudio.flow.collectAsStateWithLifecycle()
@@ -273,6 +274,24 @@ fun SettingsScreen(nav: NavController) {
                         FilterChip(selected = zoom == v, onClick = { st.defaultZoom.set(v) }, label = { Text(label) })
                     }
                 }
+                Text("HDR output", style = MaterialTheme.typography.bodyMedium)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    com.jainz.memc.player.HdrMode.labels.forEach { (v, label) ->
+                        FilterChip(
+                            selected = hdrMode == v,
+                            enabled = v != com.jainz.memc.player.HdrMode.SDR || com.jainz.memc.player.HdrMode.sdrSupported,
+                            onClick = { st.hdrMode.set(v) },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+                Text(
+                    "Dolby Vision uses the Dolby Vision decoder. HDR10 / HDR10+ plays the base layer of Dolby Vision files (profile 8.1). SDR tone-maps HDR to normal brightness" +
+                        (if (com.jainz.memc.player.HdrMode.sdrSupported) "." else " (needs Android 15).") +
+                        " Can also be changed for one video in the player's Video panel.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Palette.TextFaint,
+                )
                 ToggleRow(
                     "Match display to video frame rate",
                     "Switches the 120 Hz screen to a multiple of 24/25/30 fps so motion doesn't judder",

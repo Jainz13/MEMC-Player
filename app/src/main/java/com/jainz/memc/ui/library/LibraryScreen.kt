@@ -34,6 +34,11 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DriveFileMove
+import com.jainz.memc.ui.transfer.SendToShareDialog
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MoreVert
@@ -179,6 +184,14 @@ fun LibraryScreen(nav: NavController) {
 
         item { SectionTitle("This phone", Modifier.padding(top = 16.dp)) }
         item { StorageAccessCard() }
+        item {
+            NavRow(
+                icon = Icons.Filled.Backup,
+                title = "Automatic backup to a network share",
+                subtitle = "Upload new files from phone folders by themselves",
+                onClick = { nav.navigate(Routes.BACKUP) },
+            )
+        }
         items(phoneFolders, key = { "f${it.folder}" }) { f ->
             NavRow(
                 icon = Icons.Filled.Folder,
@@ -357,16 +370,34 @@ fun VideoRow(c: VideoCard, onClick: () -> Unit, trailing: @Composable () -> Unit
         trailing()
         var menu by remember { mutableStateOf(false) }
         var deleting by remember { mutableStateOf(false) }
+        var sending by remember { mutableStateOf<Boolean?>(null) } // true = move, false = copy
+        val onPhone = !v.uri.startsWith("smb://")
         Box {
             IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More", tint = Palette.TextDim) }
             DropdownMenu(menu, onDismissRequest = { menu = false }) {
+                if (onPhone) {
+                    DropdownMenuItem(
+                        text = { Text("Move to network share…") },
+                        leadingIcon = { Icon(Icons.Filled.DriveFileMove, null) },
+                        onClick = { menu = false; sending = true },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Copy to network share…") },
+                        leadingIcon = { Icon(Icons.Filled.CloudUpload, null) },
+                        onClick = { menu = false; sending = false },
+                    )
+                }
                 DropdownMenuItem(
                     text = { Text("Delete file", color = Palette.Danger) },
+                    leadingIcon = { Icon(Icons.Filled.Delete, null, tint = Palette.Danger) },
                     onClick = { menu = false; deleting = true },
                 )
             }
         }
         if (deleting) DeleteVideosDialog(listOf(v), "this file", onDismiss = { deleting = false })
+        sending?.let { move ->
+            SendToShareDialog(listOf(v), move, suggestedFolder = null, onDismiss = { sending = null })
+        }
     }
 }
 
@@ -375,7 +406,30 @@ fun FolderScreen(nav: NavController, sourceId: Long, folder: String) {
     val g = MemcApp.graph
     val context = LocalContext.current
     val videos by remember(sourceId, folder) { g.db.videos().inFolder(sourceId, folder) }.collectAsStateWithLifecycle(emptyList())
-    SubScreen(folder.trimEnd('/').substringAfterLast('/').ifBlank { "Internal storage" }, folder, nav) {
+    val folderName = folder.trimEnd('/').substringAfterLast('/').ifBlank { "Internal storage" }
+    var sendAll by remember { mutableStateOf<Boolean?>(null) }
+    val local = videos.filter { !it.video.uri.startsWith("smb://") }
+    sendAll?.let { move ->
+        SendToShareDialog(local.map { it.video }, move, suggestedFolder = folderName, onDismiss = { sendAll = null })
+    }
+    SubScreen(folderName, folder, nav) {
+        if (local.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = { sendAll = true }) {
+                    Icon(Icons.Filled.DriveFileMove, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Move all to share")
+                }
+                OutlinedButton(onClick = { sendAll = false }) {
+                    Icon(Icons.Filled.CloudUpload, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Copy all")
+                }
+            }
+        }
         LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
             items(videos, key = { it.video.id }) { c -> VideoRow(c, onClick = { Play.video(context, c.video.id) }) }
         }

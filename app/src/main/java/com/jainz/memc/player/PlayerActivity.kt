@@ -90,12 +90,16 @@ class PlayerActivity : ComponentActivity() {
         // A previous attempt showed this video can't go through the effect pipeline: play it plain.
         // The TV variant has no effect pipeline at all (no 60 fps, no picture processing).
         val memcAllowed = !BuildConfig.TV && !intent.getBooleanExtra(EXTRA_NO_MEMC, false)
+        // HDR output chosen in the player for this session, else the Settings default.
+        hdrMode = intent.getIntExtra(EXTRA_HDR_MODE, g.settings.hdrMode.value)
+        if (hdrMode == HdrMode.SDR && !HdrMode.sdrSupported) hdrMode = HdrMode.HDR10
         picture = PictureControl(
             // Without the effect pipeline nothing may be flagged as HDR, or SDR colours would be wrong.
             boost = if (memcAllowed) g.settings.hdrBoost.value / 100f else 0f,
-            autoHdr = g.settings.autoHdr.value && memcAllowed && !intent.getBooleanExtra(EXTRA_NO_AUTO_HDR, false),
+            autoHdr = g.settings.autoHdr.value && memcAllowed && hdrMode != HdrMode.SDR &&
+                !intent.getBooleanExtra(EXTRA_NO_AUTO_HDR, false),
         )
-        player = PlayerFactory.create(this, g.smb, g.settings, picture)
+        player = PlayerFactory.create(this, g.smb, g.settings, picture, hdrMode)
         state = PlayerState(player)
         memc = MemcControl(
             enabled = g.settings.memcEnabled.value && memcAllowed,
@@ -142,6 +146,7 @@ class PlayerActivity : ComponentActivity() {
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                loadFileTech()
                 if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
                     // The previous item played to the end.
                     val prev = player.previousMediaItemIndex
@@ -155,6 +160,7 @@ class PlayerActivity : ComponentActivity() {
 
             // The video format is often still unknown when tracks change; the first frame is certain.
             override fun onRenderedFirstFrame() {
+                HdrMode.applyToSurface(playerView?.videoSurfaceView as? SurfaceView, hdrMode)
                 if (openedAt > 0) {
                     DebugRecorder.event("player", "First picture ${SystemClock.elapsedRealtime() - openedAt} ms after opening")
                     openedAt = 0
@@ -178,6 +184,19 @@ class PlayerActivity : ComponentActivity() {
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                // A Dolby Vision file without an HDR10 layer (profile 5) can't play on the base
+                // layer: go back to the Dolby Vision decoder for it.
+                val decoderProblem = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED
+                if (decoderProblem && !HdrMode.usesDolbyVision(hdrMode) && PlayerState.hdrLabel(player.videoFormat, state.fileTech) == "Dolby Vision") {
+                    Toast.makeText(this@PlayerActivity, "This Dolby Vision video has no HDR10 layer - playing it in Dolby Vision", Toast.LENGTH_LONG).show()
+                    saveProgress()
+                    intent.putExtra(EXTRA_HDR_MODE, HdrMode.DOLBY_VISION)
+                    intent.putExtra(EXTRA_START_MS, player.currentPosition)
+                    recreate()
+                    return
+                }
                 val pipelineFailed = error.errorCode == PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSOR_INIT_FAILED ||
                     error.errorCode == PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED
                 if (memcInstalled && pipelineFailed) {
@@ -224,9 +243,12 @@ class PlayerActivity : ComponentActivity() {
                     picture = picture,
                     onPictureChange = { boost, autoHdr -> updatePicture(boost, autoHdr) },
                     onExport = { exportCurrent() },
+                    hdrMode = hdrMode,
+                    onHdrMode = { changeHdrMode(it) },
                     onPlayerView = { view ->
                         playerView = view
                         DebugRecorder.videoSurface = WeakReference(view.videoSurfaceView as? SurfaceView)
+                        HdrMode.applyToSurface(view.videoSurfaceView as? SurfaceView, hdrMode)
                         applyDisplayRate()
                     },
                 )
@@ -284,6 +306,7 @@ class PlayerActivity : ComponentActivity() {
 
             player.setMediaItems(entries.map { it.second }, 0, resumeAt)
             openedAt = SystemClock.elapsedRealtime()
+            loadFileTech()
             DebugRecorder.event("player", "Opening the video (resume at ${resumeAt / 1000}s, 60 fps ${if (memc.enabled) "on" else "off"})")
             player.prepare()
             player.play()
@@ -448,6 +471,12 @@ class PlayerActivity : ComponentActivity() {
             val watched = pos >= dur * 0.90
             g.db.videos().savePlayback(id, if (watched) 0 else pos, dur, System.currentTimeMillis(), watched)
         }
+    }
+
+    /** The library's tags for the playing file, so the HDR badge works when the stream is vague. */
+    private fun loadFileTech() {
+        val id = currentId() ?: return
+        lifecycleScope.launch { state.fileTech = g.db.videos().get(id)?.tech.orEmpty() }
     }
 
     private fun recordTech() {
@@ -646,6 +675,26 @@ class PlayerActivity : ComponentActivity() {
                     DebugRecorder.event("npu", memc.npuStatus)
                 }
             }
+        }
+    }
+
+    private var hdrMode = HdrMode.AUTO
+
+    /**
+     * HDR output picked in the player. Switching between Dolby Vision and the base layer needs
+     * another decoder (restart at the same spot); HDR10 <-> SDR only changes the screen layer.
+     */
+    private fun changeHdrMode(mode: Int) {
+        if (mode == hdrMode) return
+        val restart = HdrMode.usesDolbyVision(mode) != HdrMode.usesDolbyVision(hdrMode) ||
+            (mode == HdrMode.SDR && picture.autoHdr)
+        DebugRecorder.event("player", "HDR output ${HdrMode.labels.toMap()[hdrMode]} -> ${HdrMode.labels.toMap()[mode]}")
+        hdrMode = mode
+        intent.putExtra(EXTRA_HDR_MODE, mode)
+        if (restart) {
+            restartAtPosition()
+        } else {
+            HdrMode.applyToSurface(playerView?.videoSurfaceView as? SurfaceView, mode)
         }
     }
 
@@ -869,6 +918,7 @@ class PlayerActivity : ComponentActivity() {
         const val EXTRA_TITLE = "title"
         const val EXTRA_FROM_START = "from_start"
         const val EXTRA_NO_MEMC = "no_memc"
+        const val EXTRA_HDR_MODE = "hdr_mode"
         const val EXTRA_START_MS = "start_ms"
         const val EXTRA_NO_AUTO_HDR = "no_auto_hdr"
     }

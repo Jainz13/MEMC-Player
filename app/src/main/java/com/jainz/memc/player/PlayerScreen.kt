@@ -155,6 +155,8 @@ fun PlayerScreen(
     onPlayerView: (PlayerView) -> Unit,
     picture: PictureControl,
     onPictureChange: (boost: Float, autoHdr: Boolean) -> Unit,
+    hdrMode: Int = HdrMode.AUTO,
+    onHdrMode: (Int) -> Unit = {},
 ) {
     val player = state.player
     val activity = LocalContext.current as Activity
@@ -646,7 +648,7 @@ fun PlayerScreen(
                             )
                         }
                         val video = state.videoFormat
-                        val hdr = PlayerState.hdrLabel(video)
+                        val hdr = state.hdr()
                         if (video != null) {
                             Text(
                                 listOfNotNull(
@@ -684,7 +686,7 @@ fun PlayerScreen(
             val settings = MemcApp.graph.settings
             val statsWanted by settings.showStats.flow.collectAsStateWithLifecycle()
             val statsOn = statsWanted && !BuildConfig.TV
-            val format = PlayerState.hdrLabel(state.videoFormat)?.let {
+            val format = state.hdr()?.let {
                 when (it) {
                     "HDR10 / HDR10+" -> "HDR"
                     else -> it
@@ -816,6 +818,8 @@ fun PlayerScreen(
                                 memcAvailable = memcAvailable,
                                 onMemcChange = onMemcChange,
                                 onExport = onExport,
+                                hdrMode = hdrMode,
+                                onHdrMode = onHdrMode,
                             )
                         }
                     }
@@ -1033,6 +1037,43 @@ private fun SubtitlesTab(state: PlayerState, scale: Float, onScale: (Float) -> U
     }
 }
 
+/** HDR output for this video: Auto, Dolby Vision, the HDR10 / HDR10+ layer, or SDR. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun HdrOutputSection(state: PlayerState, mode: Int, onMode: (Int) -> Unit) {
+    val video = state.videoFormat
+    val kind = state.hdr()
+    PanelHeading("HDR output")
+    androidx.compose.foundation.layout.FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        HdrMode.labels.forEach { (value, name) ->
+            val allowed = value != HdrMode.SDR || HdrMode.sdrSupported
+            FilterChip(
+                selected = mode == value,
+                enabled = allowed,
+                onClick = { onMode(value) },
+                label = { Text(name) },
+            )
+        }
+    }
+    val detail = buildList {
+        add("This video: " + (kind ?: "SDR"))
+        PlayerState.dvProfile(video)?.let { add("Dolby Vision $it") }
+    }.joinToString(" · ")
+    Text(detail, style = MaterialTheme.typography.bodySmall, color = Palette.Accent, modifier = Modifier.padding(top = 4.dp))
+    Text(
+        when (mode) {
+            HdrMode.DOLBY_VISION, HdrMode.AUTO -> "Dolby Vision files use the Dolby Vision decoder; HDR10 and HDR10+ files play as they are."
+            HdrMode.HDR10 -> "Dolby Vision files play their HDR10 / HDR10+ layer (profile 8.1 has one; profile 5 doesn't and stays Dolby Vision). HDR10+ brightness data needs 60 fps off."
+            else -> "HDR videos are tone-mapped to SDR by Android: dimmer highlights, no HDR mode on the screen."
+        } + if (!HdrMode.sdrSupported) " SDR needs Android 15." else "",
+        style = MaterialTheme.typography.bodySmall,
+        color = Palette.TextFaint,
+    )
+}
+
 @UnstableApi
 @Composable
 private fun VideoTab(
@@ -1049,9 +1090,13 @@ private fun VideoTab(
     memcAvailable: Boolean,
     onMemcChange: (Boolean, Int, Int) -> Unit,
     onExport: () -> Unit,
+    hdrMode: Int,
+    onHdrMode: (Int) -> Unit,
 ) {
     val player = state.player
     Column {
+        HdrOutputSection(state, hdrMode, onHdrMode)
+
         PanelHeading("Scaling")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(
@@ -1112,7 +1157,7 @@ private fun VideoTab(
         var pictureStatus by remember { mutableStateOf("") }
         LaunchedEffect(Unit) {
             while (true) {
-                val hdrVideo = PlayerState.hdrLabel(state.videoFormat)?.let { it != "Auto HDR" } == true
+                val hdrVideo = state.hdr()?.let { it != "Auto HDR" } == true
                 val pipeline = when (picture.pipelineHdr) {
                     null -> "pipeline not running"
                     true -> "HDR pipeline"
@@ -1314,7 +1359,8 @@ private fun playbackInfo(state: PlayerState): List<Pair<String, String>> {
                 if (v.width > 0) "${v.width}×${v.height}" else null,
                 if (v.frameRate > 0) String.format(java.util.Locale.US, "%.3f fps", v.frameRate) else null,
             ).joinToString(" · "))
-            add("HDR" to (PlayerState.hdrLabel(v) ?: "SDR"))
+            add("HDR" to (state.hdr() ?: "SDR"))
+            PlayerState.dvProfile(v)?.let { add("Dolby Vision" to it) }
         }
         if (vd != null) {
             val hw = vd.startsWith("c2.qti") || vd.startsWith("OMX.qcom") || vd.startsWith("c2.exynos") || vd.contains("hw", true)
