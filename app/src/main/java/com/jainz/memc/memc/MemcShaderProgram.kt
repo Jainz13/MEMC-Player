@@ -567,6 +567,7 @@ class MemcShaderProgram(
             return false
         }
         val n = ensureNpu() ?: return false
+        if (live && !npuFits(n)) return false
         try {
             val w = n.width
             val h = n.height
@@ -626,6 +627,30 @@ class MemcShaderProgram(
             npuFailed(e)
             return false
         }
+    }
+
+    /**
+     * Playback runs the model once per pair of source frames, on this thread. That only works
+     * when the video's frame rate times the time per pass leaves room for everything else:
+     * 24 fps x 22 ms = 53% of each second is fine; a 48 fps film needs 106%, which no buffer
+     * can make up (it only delays the stutter). Such videos use Best on the GPU from the start.
+     */
+    private fun npuFits(n: NpuFlow): Boolean {
+        val fps = control.sourceFps
+        if (fps <= 0f) return true
+        val passMs = if (n.runs >= 8) n.averageMs else NPU_PASS_GUESS_MS
+        val share = fps * passMs / 1000f
+        val fits = share <= NPU_BUDGET
+        control.aiOverBudget = !fits
+        if (!fits) {
+            val pct = (share * 100).toInt()
+            val status = "AI can't keep up with this ${fps.roundToInt()} fps video (the NPU would need $pct% of the time) - using Best on the GPU"
+            if (control.npuStatus != status) {
+                control.npuStatus = status
+                com.jainz.memc.core.DebugRecorder.event("npu", status)
+            }
+        }
+        return fits
     }
 
     /** The model to use, or null. Adopts the player's instance or creates one for export. */
@@ -865,6 +890,10 @@ class MemcShaderProgram(
         private const val HDR_STORE = 256f
         private const val BLOCK = 8
         private val VALID_DT = 4_000L..250_000L
+        /** Largest share of real time the NPU may take during playback (the GPU needs the rest). */
+        private const val NPU_BUDGET = 0.75f
+        /** Time per model pass assumed until it has been measured (Snapdragon 8 Gen 3). */
+        private const val NPU_PASS_GUESS_MS = 22f
         /** GPU memory for pre-rendered frames; the buffer is this divided by the frame size. */
         // Frames rendered ahead of the screen: about 1 GB of graphics memory, at most ~1.2 s at 60 fps.
         private const val POOL_BUDGET_BYTES = 1024L * 1024 * 1024

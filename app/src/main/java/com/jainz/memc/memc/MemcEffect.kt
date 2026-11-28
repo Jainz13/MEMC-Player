@@ -50,6 +50,11 @@ class MemcControl(enabled: Boolean, targetFps: Int, quality: Int) {
     @Volatile var active: Boolean = false
     /** 0 = as configured … 4 = interpolation paused because the phone can't keep up. */
     @Volatile var easeLevel: Int = 0
+    /**
+     * Playback: the AI model needs more of each second than this video allows (a high frame
+     * rate times the NPU's time per frame pair). AI is skipped and Best is used instead.
+     */
+    @Volatile var aiOverBudget: Boolean = false
     @Volatile var procWidth: Int = 0
     @Volatile var procHeight: Int = 0
     /** Frames the engine may render ahead of the screen. */
@@ -92,7 +97,14 @@ class MemcControl(enabled: Boolean, targetFps: Int, quality: Int) {
         return minOf(base, eased, screen).coerceAtLeast(640)
     }
 
-    internal fun effectiveQuality(): Int = if (easeLevel >= 1 || thermalLevel >= 3) 0 else quality.coerceIn(0, 2)
+    internal fun effectiveQuality(): Int = when {
+        thermalLevel >= 3 -> 0
+        // AI that had to be dropped falls back to Best: without the NPU's share of every frame
+        // the GPU has room for it. Only a second step down goes to the lightest setting.
+        quality == 3 -> if (easeLevel >= 2) 0 else 2
+        easeLevel >= 1 -> 0
+        else -> quality.coerceIn(0, 2)
+    }
 
     /** Output rate actually in use (the governor may hold 120 fps down to 60). */
     fun effectiveFps(): Int = effectiveTargetFps()

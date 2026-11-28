@@ -41,6 +41,7 @@ class SmbDataSource(private val pool: SmbPool) : BaseDataSource(/* isNetwork = *
     override fun open(dataSpec: DataSpec): Long {
         uri = dataSpec.uri
         transferInitializing(dataSpec)
+        val openStart = System.nanoTime()
         val f = try {
             pool.openFile(pool.resolve(dataSpec.uri))
         } catch (e: IOException) {
@@ -64,6 +65,10 @@ class SmbDataSource(private val pool: SmbPool) : BaseDataSource(/* isNetwork = *
         if (dataSpec.position > fileSize) {
             throw DataSourceException(PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE)
         }
+        com.jainz.memc.core.DebugRecorder.event(
+            "smb",
+            "Opened ${dataSpec.uri.lastPathSegment} at ${dataSpec.position / (1024 * 1024)} MB in ${(System.nanoTime() - openStart) / 1_000_000} ms",
+        )
         position = dataSpec.position
         bytesRemaining = if (dataSpec.length != C.LENGTH_UNSET.toLong()) {
             min(dataSpec.length, fileSize - position)

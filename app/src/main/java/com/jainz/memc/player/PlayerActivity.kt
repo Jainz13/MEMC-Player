@@ -155,6 +155,10 @@ class PlayerActivity : ComponentActivity() {
 
             // The video format is often still unknown when tracks change; the first frame is certain.
             override fun onRenderedFirstFrame() {
+                if (openedAt > 0) {
+                    DebugRecorder.event("player", "First picture ${SystemClock.elapsedRealtime() - openedAt} ms after opening")
+                    openedAt = 0
+                }
                 recordTech()
                 checkAutoHdrPipeline()
                 // Start of the video or the first picture after a seek: render ahead before rolling.
@@ -187,6 +191,9 @@ class PlayerActivity : ComponentActivity() {
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY && openedAt > 0) {
+                    DebugRecorder.event("player", "Video loaded ${SystemClock.elapsedRealtime() - openedAt} ms after opening")
+                }
                 if (playbackState == Player.STATE_ENDED) {
                     saveProgress(finished = true)
                     if (!player.hasNextMediaItem()) finish()
@@ -276,6 +283,8 @@ class PlayerActivity : ComponentActivity() {
             resumeNotice = if (resumeAt > 0) resumeAt else null
 
             player.setMediaItems(entries.map { it.second }, 0, resumeAt)
+            openedAt = SystemClock.elapsedRealtime()
+            DebugRecorder.event("player", "Opening the video (resume at ${resumeAt / 1000}s, 60 fps ${if (memc.enabled) "on" else "off"})")
             player.prepare()
             player.play()
             startSaver()
@@ -475,6 +484,8 @@ class PlayerActivity : ComponentActivity() {
     // ---- Rendering ahead ---------------------------------------------------------------------------
 
     private var prebufferJob: Job? = null
+    /** When the current video was opened, until its first picture (for the debug recording). */
+    private var openedAt = 0L
     private var fillJob: Job? = null
     private var lastPrebufferAt = 0L
 
@@ -507,8 +518,9 @@ class PlayerActivity : ComponentActivity() {
     }
 
     /**
-     * Holds playback for a moment (at most 3 seconds) while the engine fills its buffer, then
-     * carries on. Returns false when it didn't apply (not playing, 60 fps off, done too recently).
+     * Holds playback for a moment (at most 1.5 seconds) while the engine renders a little
+     * ahead, then carries on; the rest of the buffer fills while playing. Returns false when it
+     * didn't apply (not playing, 60 fps off, done too recently).
      */
     private fun prebuffer(minGapMs: Long): Boolean {
         if (!memcInstalled || !memc.enabled || memc.thermalLevel >= 4 || memc.easeLevel >= 4) return false
@@ -522,14 +534,26 @@ class PlayerActivity : ComponentActivity() {
         state.prebuffering = true
         player.pause()
         prebufferJob = lifecycleScope.launch {
+            // Counted from when the video is loaded: time spent opening it isn't buffering time.
+            var since = SystemClock.elapsedRealtime()
             try {
                 while (isActive) {
                     delay(40)
                     if (player.playWhenReady) break // play was pressed meanwhile
+                    if (player.playbackState != Player.STATE_READY) {
+                        since = SystemClock.elapsedRealtime()
+                        if (since - now > 15_000) {
+                            player.play() // never stay held behind a load that doesn't finish
+                            break
+                        }
+                        continue
+                    }
                     val capacity = memc.bufferFrames
-                    val wanted = if (capacity > 0) minOf(capacity - 2, maxOf(12, capacity * 6 / 10)) else Int.MAX_VALUE
-                    val waited = SystemClock.elapsedRealtime() - now
-                    if (waited > 3000 || (waited > 250 && memc.bufferedFrames >= wanted)) {
+                    // About a third of a second of frames: enough to absorb the first heavy frames
+                    // without making every video slow to start.
+                    val wanted = if (capacity > 0) minOf(capacity - 2, maxOf(12, capacity * 3 / 10)) else Int.MAX_VALUE
+                    val waited = SystemClock.elapsedRealtime() - since
+                    if (waited > 1500 || (waited > 150 && memc.bufferedFrames >= wanted)) {
                         // Not if the app was sent to the background meanwhile.
                         if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) player.play()
                         break
