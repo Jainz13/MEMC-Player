@@ -175,12 +175,51 @@ def export(module, args, names_in, names_out, path):
     return onnx.load(path)
 
 
+def time_on_aihub(out):
+    """Compiles and times the three parts on a Galaxy S24 (AI Hub). Runs after publishing, so
+    a slow AI Hub queue never holds the model back."""
+    if not os.environ.get("QAI_HUB_API_TOKEN"):
+        print("AI Hub timing skipped (no QAI_HUB_API_TOKEN secret).")
+        return
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "npu"))
+    import qai_hub as hub
+    from aihub_profile import pick_device, status_of, summarise
+    device = pick_device(hub)
+    lines = [f"## AI Hub ({device.name})", ""]
+    for part in ("enc", "tmp", "dec"):
+        path = os.path.join(out, f"vda_s_{part}.onnx")
+        try:
+            job = hub.submit_compile_job(model=path, device=device, name=f"vda-{part}",
+                                         options="--target_runtime precompiled_qnn_onnx")
+            ok, msg = status_of(job)
+            if not ok:
+                lines.append(f"- {part}: compile failed: {msg[:300]}")
+                continue
+            prof = hub.submit_profile_job(model=job.get_target_model(), device=device, name=f"vda-{part}")
+            ok, msg = status_of(prof)
+            if not ok:
+                lines.append(f"- {part}: profile failed: {msg[:300]}")
+                continue
+            s = summarise(prof.download_profile())
+            lines.append(f"- {part}: **{s['inference_ms']} ms**, not on NPU: {s['layer_types_not_on_npu'] or 'none'}")
+        except Exception as ex:
+            traceback.print_exc()
+            lines.append(f"- {part}: error {ex}")
+        print(lines[-1], flush=True)
+    with open(os.path.join(out, "vda-npu.md"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print("\n".join(lines))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="out")
     ap.add_argument("--work", default="work")
     ap.add_argument("--random-weights", action="store_true", help="local test without the checkpoint")
+    ap.add_argument("--time-only", action="store_true", help="only time the already exported parts on AI Hub")
     args = ap.parse_args()
+    if args.time_only:
+        return time_on_aihub(args.out)
     os.makedirs(args.out, exist_ok=True)
     os.makedirs(args.work, exist_ok=True)
     torch.set_grad_enabled(False)
@@ -255,37 +294,7 @@ def main():
              f"- sizes (MB): {info['size_mb']}",
              f"- CPU on the GitHub runner: {info['github_runner_cpu_ms']} ms (enc and dec per frame, tmp per window)", ""]
 
-    if os.environ.get("QAI_HUB_API_TOKEN"):
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "npu"))
-        try:
-            import qai_hub as hub
-            from aihub_profile import pick_device, status_of, summarise
-            device = pick_device(hub)
-            lines += [f"## AI Hub ({device.name})", ""]
-            for part, path in (("enc", f_enc), ("tmp", f_tmp), ("dec", f_dec)):
-                try:
-                    job = hub.submit_compile_job(model=path, device=device, name=f"vda-{part}",
-                                                 options="--target_runtime precompiled_qnn_onnx")
-                    ok, msg = status_of(job)
-                    if not ok:
-                        lines.append(f"- {part}: compile failed: {msg[:300]}")
-                        continue
-                    prof = hub.submit_profile_job(model=job.get_target_model(), device=device, name=f"vda-{part}")
-                    ok, msg = status_of(prof)
-                    if not ok:
-                        lines.append(f"- {part}: profile failed: {msg[:300]}")
-                        continue
-                    s = summarise(prof.download_profile())
-                    info[f"aihub_{part}"] = s
-                    lines.append(f"- {part}: **{s['inference_ms']} ms**, not on NPU: {s['layer_types_not_on_npu'] or 'none'}")
-                except Exception as ex:
-                    traceback.print_exc()
-                    lines.append(f"- {part}: error {ex}")
-        except Exception as ex:
-            traceback.print_exc()
-            lines.append(f"AI Hub step failed: {ex}")
-    else:
-        lines.append("AI Hub timing skipped (no QAI_HUB_API_TOKEN secret).")
+    lines.append("NPU timing: see the AI Hub step of this workflow run.")
 
     with open(os.path.join(args.out, "vda.json"), "w") as f:
         json.dump(info, f, indent=2)
