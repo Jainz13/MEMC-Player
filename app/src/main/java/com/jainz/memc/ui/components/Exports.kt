@@ -110,7 +110,9 @@ private fun ExportRow(job: ExportJob) {
             Text("${job.title} · ${job.kindLabel}", style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             val statusText = when (job.status) {
                 ExportStatus.QUEUED -> "Waiting"
-                ExportStatus.RUNNING -> if (job.progress >= 0) {
+                ExportStatus.RUNNING -> if (job.stats == null && job.message != null) {
+                    "Preparing"
+                } else if (job.progress >= 0) {
                     val elapsedMin = (System.currentTimeMillis() - job.startedAt) / 60000.0
                     val left = if (job.stats == null && job.progress >= 2 && job.startedAt > 0) {
                         val m = elapsedMin * (100 - job.progress) / job.progress

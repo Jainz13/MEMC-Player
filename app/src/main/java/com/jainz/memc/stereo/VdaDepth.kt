@@ -275,6 +275,14 @@ class VdaDepth private constructor(
             val sessions = ArrayList<OrtSession>()
             try {
                 for ((i, ref) in VdaModel.refs.withIndex()) {
+                    if (i == 1) {
+                        // The 32-frame temporal part runs once per 22 frames and is light, but the
+                        // NPU compiler doesn't finish with it in reasonable time (it stalled for
+                        // over 20 minutes on a Galaxy S24): the CPU runs it in about a second.
+                        onStep("Loading the AI 3D model (2/3)…")
+                        sessions += env.createSession(ref.bytes(context), cpuOptions())
+                        continue
+                    }
                     onStep("Preparing the AI 3D model for this phone (${i + 1}/3, first time takes a few minutes)…")
                     sessions += ref.open(context, env) { options(libs) }
                 }
@@ -292,6 +300,11 @@ class VdaDepth private constructor(
                 sessions.forEach { runCatching { it.close() } }
                 throw e
             }
+        }
+
+        private fun cpuOptions() = OrtSession.SessionOptions().apply {
+            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceIn(2, 6))
         }
 
         private fun options(libs: String) = OrtSession.SessionOptions().apply {

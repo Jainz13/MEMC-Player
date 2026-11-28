@@ -64,6 +64,10 @@ class ModelRef(
         return session
     }
 
+    /** The model's bytes (from the APK, or the downloaded copy), for running it on the CPU. */
+    fun bytes(context: Context): ByteArray =
+        if (bundled(context)) context.assets.open(asset).use { it.readBytes() } else downloaded(context).readBytes()
+
     private companion object {
         fun dir(context: Context) = File(context.filesDir, "npu").apply { mkdirs() }
     }
