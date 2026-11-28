@@ -58,6 +58,8 @@ class ThreeDUi(
     val onDownloadModel: () -> Unit,
     val autoHdr: Boolean = true,
     val onAutoHdr: (Boolean) -> Unit = {},
+    /** Save a 3D copy (true = half side-by-side); null where the export can't run (no Snapdragon NPU, TV). */
+    val onExport3d: ((Boolean) -> Unit)? = null,
 ) {
     /** The video is on an external display (glasses); the phone shows the black touch pad. */
     var glassesActive by mutableStateOf(false)
@@ -140,6 +142,20 @@ fun ThreeDSection(ui: ThreeDUi) {
                 Text("Swap left and right eye", color = Color.White, modifier = Modifier.weight(1f))
                 var swap by remember { mutableStateOf(stereo.swapEyes) }
                 Switch(checked = swap, onCheckedChange = { swap = it; stereo.swapEyes = it; ui.onSwap(it) })
+            }
+        }
+        val export = ui.onExport3d
+        if (export != null && ui.mode != StereoControl.SBS && ui.mode != StereoControl.HALF_SBS) {
+            Text("Save as a 3D file", style = MaterialTheme.typography.bodyMedium, color = Color.White, modifier = Modifier.padding(top = 8.dp))
+            Text(
+                "Best-quality 3D: the AI looks at 32 frames at a time (Video Depth Anything), so depth stays steady. " +
+                    "Runs in the background; expect it to take longer than the video. Uses the depth and eye settings above.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Palette.TextFaint,
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { export(false) }) { Text("Full SBS (glasses)") }
+                OutlinedButton(onClick = { export(true) }) { Text("Half SBS (3D TV)") }
             }
         }
         if (!BuildConfig.TV) {

@@ -43,6 +43,14 @@ class StereoControl(val mode: Int) {
     /** The AI depth model on the NPU, when available (phone, Snapdragon). */
     @Volatile var npu: NpuDepth? = null
 
+    // ---- 3D export ----
+    /** Depth from this file (the export's depth video) instead of estimating it live. */
+    @Volatile var depthVideo: java.io.File? = null
+    /** Write half side-by-side (each eye squeezed to half width, for 3D TVs and projectors). */
+    @Volatile var halfSbsOutput: Boolean = false
+    /** Counts frames rendered, for the export's speed readout. */
+    val framesDone = java.util.concurrent.atomic.AtomicLong()
+
     // ---- Written by the render stage, for the status line ----
     @Volatile var status: String = ""
     @Volatile var outWidth: Int = 0

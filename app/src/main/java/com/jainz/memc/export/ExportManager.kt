@@ -25,6 +25,19 @@ data class ExportJob(
     val startedAt: Long = 0,
     /** Live figures while rendering (null until the first sample). */
     val stats: ExportStats? = null,
+    /** Set for a 3D export (instead of 60 fps). */
+    val threeD: ThreeDExport? = null,
+) {
+    val kindLabel: String get() = threeD?.let { if (it.halfSbs) "3D Half-SBS" else "3D Full-SBS" } ?: "60 fps"
+}
+
+/** Settings of a 3D export: side-by-side layout and the 3D look chosen in the player. */
+data class ThreeDExport(
+    /** Half side-by-side 1920x1080 (3D TVs, projectors) instead of full 3840x1080 (AR glasses). */
+    val halfSbs: Boolean,
+    val strength: Float,
+    val convergence: Float,
+    val swapEyes: Boolean,
 )
 
 /** What the export is doing right now, refreshed every couple of seconds. */
@@ -48,17 +61,18 @@ data class ExportStats(
     val speedX: Double get() = fps / 60.0
 }
 
-/** Queue of 60 fps exports; the ExportService works through it one video at a time. */
+/** Queue of 60 fps and 3D exports; the ExportService works through it one video at a time. */
 object ExportManager {
     private val ids = AtomicLong(System.currentTimeMillis())
     private val _jobs = MutableStateFlow<List<ExportJob>>(emptyList())
     val jobs: StateFlow<List<ExportJob>> = _jobs.asStateFlow()
 
-    fun enqueue(context: Context, sourceUri: String, title: String) {
+    fun enqueue(context: Context, sourceUri: String, title: String, threeD: ThreeDExport? = null) {
         val already = _jobs.value.any {
-            it.sourceUri == sourceUri && (it.status == ExportStatus.QUEUED || it.status == ExportStatus.RUNNING)
+            it.sourceUri == sourceUri && it.threeD?.halfSbs == threeD?.halfSbs && (it.threeD == null) == (threeD == null) &&
+                (it.status == ExportStatus.QUEUED || it.status == ExportStatus.RUNNING)
         }
-        if (!already) _jobs.update { it + ExportJob(ids.incrementAndGet(), sourceUri, title) }
+        if (!already) _jobs.update { it + ExportJob(ids.incrementAndGet(), sourceUri, title, threeD = threeD) }
         ContextCompat.startForegroundService(context, Intent(context, ExportService::class.java))
     }
 

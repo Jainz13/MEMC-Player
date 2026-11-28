@@ -33,10 +33,13 @@ object DepthModel {
     }
 
     /** Downloads the model, reporting (bytes so far, total or -1). */
-    suspend fun download(context: Context, onProgress: (Long, Long) -> Unit) = withContext(Dispatchers.IO) {
-        val target = file(context)
-        val part = File(target.parentFile, "$NAME.part")
-        val req = Request.Builder().url(URL).build()
+    suspend fun download(context: Context, onProgress: (Long, Long) -> Unit) =
+        downloadTo(URL, file(context), MIN_BYTES, onProgress)
+
+    /** Downloads [url] to [target] through a .part file, reporting (bytes so far, total or -1). */
+    suspend fun downloadTo(url: String, target: File, minBytes: Long, onProgress: (Long, Long) -> Unit) = withContext(Dispatchers.IO) {
+        val part = File(target.parentFile, "${target.name}.part")
+        val req = Request.Builder().url(url).build()
         Http.client.newBuilder().readTimeout(60, java.util.concurrent.TimeUnit.SECONDS).build()
             .newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) throw IOException("Download failed (HTTP ${resp.code}) - the model may not be published yet")
@@ -62,7 +65,7 @@ object DepthModel {
                     }
                 }
             }
-        if (part.length() < MIN_BYTES) {
+        if (part.length() < minBytes) {
             part.delete()
             throw IOException("The download was incomplete")
         }

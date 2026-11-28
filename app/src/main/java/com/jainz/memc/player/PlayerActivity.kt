@@ -134,6 +134,7 @@ class PlayerActivity : ComponentActivity() {
                 g.settings.stereoAutoHdr.set(it)
                 restartAtPosition()
             },
+            onExport3d = if (!BuildConfig.TV && NpuFlow.isSnapdragon) { half -> exportCurrent3d(half) } else null,
         ).apply {
             canUseAi = !BuildConfig.TV && NpuFlow.isSnapdragon
             modelState = if (!canUseAi || DepthModel.ready(this@PlayerActivity)) "" else "missing"
@@ -989,6 +990,28 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** Queues a 3D copy of this video (Video Depth Anything), with the 3D look set here. */
+    private fun exportCurrent3d(halfSbs: Boolean) {
+        val item = player.currentMediaItem ?: return
+        val uri = item.localConfiguration?.uri?.toString() ?: return
+        val title = item.mediaMetadata.title?.toString() ?: titleFromUri(uri)
+        val sub = item.mediaMetadata.subtitle?.toString()
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
+        val s = stereo
+        val settings = com.jainz.memc.export.ThreeDExport(
+            halfSbs = halfSbs,
+            strength = s?.strength ?: (g.settings.stereoStrength.value / 100f),
+            convergence = s?.convergence ?: 0.35f,
+            swapEyes = s?.swapEyes ?: g.settings.stereoSwap.value,
+        )
+        ExportManager.enqueue(this, uri, if (sub != null && sub.contains("S") && sub.contains("E")) "$title $sub" else title, settings)
+        Toast.makeText(this, "3D export added - see Library → Exports. It runs in the background.", Toast.LENGTH_LONG).show()
     }
 
     private fun exportCurrent() {

@@ -56,7 +56,7 @@ fun ExportsSection() {
     if (jobs.isEmpty()) return
     Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionTitle("60 fps exports", Modifier.weight(1f).padding(top = 12.dp))
+            SectionTitle("Exports", Modifier.weight(1f).padding(top = 12.dp))
             if (jobs.any { it.status != ExportStatus.QUEUED && it.status != ExportStatus.RUNNING }) {
                 TextButton(onClick = { ExportManager.clearFinished() }, modifier = Modifier.padding(end = 8.dp, top = 12.dp)) {
                     Text("Clear finished")
@@ -76,7 +76,7 @@ private fun ExportRow(job: ExportJob) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
     ) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(job.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("${job.title} · ${job.kindLabel}", style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             val statusText = when (job.status) {
                 ExportStatus.QUEUED -> "Waiting"
                 ExportStatus.RUNNING -> if (job.progress >= 0) {
@@ -118,7 +118,7 @@ private fun ExportRow(job: ExportJob) {
                     ExportStatus.QUEUED, ExportStatus.RUNNING ->
                         TextButton(onClick = { ExportManager.cancel(context, job.id) }) { Text("Cancel") }
                     ExportStatus.DONE -> job.outputUri?.let { uri ->
-                        TextButton(onClick = { Play.uri(context, uri, "${job.title} (60 fps)") }) { Text("Play") }
+                        TextButton(onClick = { Play.uri(context, uri, "${job.title} (${job.kindLabel})") }) { Text("Play") }
                     }
                     ExportStatus.FAILED, ExportStatus.CANCELLED ->
                         TextButton(onClick = { ExportManager.retry(context, job.id) }) { Text("Try again") }

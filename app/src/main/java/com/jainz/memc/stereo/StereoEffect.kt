@@ -50,6 +50,11 @@ private class StereoShaderProgram(
     private val smoothProgram = program(context, "stereo/depth_smooth.frag")
     private val heuristicProgram = program(context, "stereo/heuristic_depth.frag")
     private val smallProgram = program(context, "memc/npu_small.frag")
+    /** 3D export: the depth comes from the depth video made in the first pass. */
+    private val depthFile = control.depthVideo
+    private val videoProgram = if (depthFile != null) program(context, "stereo_oes/depth_video.frag") else null
+    private var reader: DepthVideoReader? = null
+    private var readerFailed = false
 
     private var outW = 0
     private var outH = 0
@@ -119,7 +124,8 @@ private class StereoShaderProgram(
                 // Each eye fits 1920x1080 (the glasses' resolution per eye).
                 val s = min(1f, min(1920f / inputWidth, 1080f / inputHeight))
                 val eyeW = even(inputWidth * s)
-                outW = eyeW * 2
+                // Half side-by-side keeps one eye's width for both (each squeezed to half).
+                outW = if (control.halfSbsOutput) eyeW else eyeW * 2
                 outH = even(inputHeight * s)
                 setUpDepth()
             }
@@ -131,8 +137,9 @@ private class StereoShaderProgram(
     }
 
     private fun setUpDepth(ai: Boolean = control.npu != null && !aiFailed && !control.hot) {
-        val w = if (ai) DepthModel.WIDTH else 192
-        val h = if (ai) DepthModel.HEIGHT else 108
+        val file = depthFile != null && !readerFailed
+        val w = if (file) DepthPassEffect.OUT_W else if (ai) DepthModel.WIDTH else 192
+        val h = if (file) DepthPassEffect.OUT_H else if (ai) DepthModel.HEIGHT else 108
         prevThumb = null
         rangeLo = Float.NaN
         if (w == smallW && h == smallH && smallTex != 0) return
@@ -179,12 +186,52 @@ private class StereoShaderProgram(
             sbsProgram.bindAttributesAndUniforms()
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             GlUtil.checkGlError()
+            control.framesDone.incrementAndGet()
         } catch (e: GlUtil.GlException) {
             throw VideoFrameProcessingException(e, presentationTimeUs)
         }
     }
 
+    /** 3D export: the depth frame for [pts] from the depth video, into the smoothed map. */
+    private fun depthFromVideo(file: java.io.File, pts: Long): Boolean {
+        val r = reader ?: try {
+            DepthVideoReader(file).also { reader = it }
+        } catch (e: Exception) {
+            readerFailed = true
+            control.status = "Couldn't read the depth video (${e.message}) - using picture cues"
+            DebugRecorder.event("3d", control.status)
+            setUpDepth(false)
+            return false
+        }
+        if (!r.showFrameFor(pts)) {
+            if (!haveDepth) clearSmooth()
+            return true
+        }
+        val p = videoProgram ?: return false
+        focus(rawFbo, depthW, depthH)
+        p.use()
+        p.setSamplerTexIdUniform("uTex", r.texId, 0)
+        p.setFloatsUniform("uTexMatrix", r.texMatrix)
+        p.bindAttributesAndUniforms()
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        // Already steady over time (Video Depth Anything + the first pass): no blending here.
+        val next = 1 - smoothIndex
+        focus(smoothFbo[next], depthW, depthH)
+        smoothProgram.use()
+        smoothProgram.setSamplerTexIdUniform("uNew", rawTex, 0)
+        smoothProgram.setSamplerTexIdUniform("uPrev", smoothTex[smoothIndex], 1)
+        smoothProgram.setFloatsUniform("uTexel", floatArrayOf(1f / depthW, 1f / depthH))
+        smoothProgram.setFloatUniform("uMix", 1f)
+        smoothProgram.bindAttributesAndUniforms()
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        smoothIndex = next
+        haveDepth = true
+        control.status = "3D export: Video Depth Anything depth"
+        return true
+    }
+
     private fun updateDepth(inputTexId: Int, pts: Long) {
+        if (depthFile != null && !readerFailed && depthFromVideo(depthFile, pts)) return
         // A seek or a jump: start the depth map over instead of blending across it.
         val jumped = lastPts != Long.MIN_VALUE && (pts < lastPts || pts - lastPts > 1_000_000)
         lastPts = pts
@@ -406,8 +453,10 @@ private class StereoShaderProgram(
     override fun release() {
         super.release()
         worker.shutdownNow()
+        reader?.let { runCatching { it.close() } }
+        reader = null
         runCatching { releaseDepth() }
-        listOf(sbsProgram, smoothProgram, heuristicProgram, smallProgram).forEach { runCatching { it.delete() } }
+        listOfNotNull(sbsProgram, smoothProgram, heuristicProgram, smallProgram, videoProgram).forEach { runCatching { it.delete() } }
     }
 
     private fun even(v: Float) = max(2, v.roundToInt() / 2 * 2)
