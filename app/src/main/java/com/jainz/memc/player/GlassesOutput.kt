@@ -32,6 +32,20 @@ class GlassesOutput(
     private val onInfo: (String?) -> Unit,
 ) {
     private val dm = activity.getSystemService(DisplayManager::class.java)
+    private val fallBack = Runnable {
+        if (!active) {
+            onSurface(null)
+            onInfo(null)
+        }
+    }
+    private var cues: List<androidx.media3.common.text.Cue> = emptyList()
+    var subtitleScale = 1f
+
+    /** Subtitles for the glasses (drawn in both eyes' halves). */
+    fun setCues(list: List<androidx.media3.common.text.Cue>) {
+        cues = list
+        presentation?.setCues(list)
+    }
     private val handler = Handler(Looper.getMainLooper())
     private var presentation: VideoPresentation? = null
     private var listening = false
@@ -49,8 +63,10 @@ class GlassesOutput(
         override fun onDisplayRemoved(displayId: Int) {
             if (presentation?.display?.displayId == displayId) {
                 dismiss()
-                onSurface(null)
-                onInfo(null)
+                // Switching the glasses between 2D and 3D disconnects and reconnects them for a
+                // moment. Only fall back to the phone if they don't come back.
+                handler.removeCallbacks(fallBack)
+                handler.postDelayed(fallBack, 4000)
             }
         }
 
@@ -74,6 +90,7 @@ class GlassesOutput(
     }
 
     fun stop() {
+        handler.removeCallbacks(fallBack)
         if (listening) {
             dm?.unregisterDisplayListener(listener)
             listening = false
@@ -83,7 +100,8 @@ class GlassesOutput(
 
     private fun show(display: Display) {
         dismiss()
-        val p = VideoPresentation(activity, display) { surface -> onSurface(surface) }
+        handler.removeCallbacks(fallBack)
+        val p = VideoPresentation(activity, display, subtitleScale) { surface -> onSurface(surface) }
         try {
             p.show()
         } catch (e: WindowManager.InvalidDisplayException) {
@@ -91,6 +109,7 @@ class GlassesOutput(
             return
         }
         presentation = p
+        p.setCues(cues)
         pickMode(p)
         onInfo(describe(display))
         DebugRecorder.event("glasses", "Video on external display: ${describe(display)}")
@@ -125,8 +144,18 @@ class GlassesOutput(
     private class VideoPresentation(
         context: Context,
         display: Display,
+        private val subtitleScale: Float,
         private val onSurfaceReady: (SurfaceView) -> Unit,
     ) : Presentation(context, display) {
+        private val subtitles = mutableListOf<androidx.media3.ui.SubtitleView>()
+        private var pending: List<androidx.media3.common.text.Cue> = emptyList()
+
+        fun setCues(list: List<androidx.media3.common.text.Cue>) {
+            pending = list
+            subtitles.forEach { it.setCues(list) }
+        }
+
+        @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
         override fun onCreate(savedInstanceState: Bundle?) {
             super.onCreate(savedInstanceState)
             window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -135,6 +164,25 @@ class GlassesOutput(
                 setBackgroundColor(Color.BLACK)
                 addView(surface, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             }
+            // One subtitle layer per eye (left and right half), at screen depth.
+            val eyes = android.widget.LinearLayout(context).apply { orientation = android.widget.LinearLayout.HORIZONTAL }
+            repeat(2) {
+                val sv = androidx.media3.ui.SubtitleView(context).apply {
+                    setApplyEmbeddedFontSizes(false)
+                    setStyle(
+                        androidx.media3.ui.CaptionStyleCompat(
+                            Color.WHITE, Color.TRANSPARENT, Color.TRANSPARENT,
+                            androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE, Color.BLACK, null,
+                        ),
+                    )
+                    setFractionalTextSize(androidx.media3.ui.SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * subtitleScale)
+                    setBottomPaddingFraction(0.06f)
+                    setCues(pending)
+                }
+                subtitles += sv
+                eyes.addView(sv, android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+            }
+            root.addView(eyes, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             setContentView(root)
             onSurfaceReady(surface)
         }

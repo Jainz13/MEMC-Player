@@ -13,6 +13,7 @@ uniform int uMode;
 uniform float uStrength;  // largest shift, as a fraction of the eye's width
 uniform float uConv;      // depth of the screen plane (0 far .. 1 near)
 uniform int uSwap;        // 1 = swap the eyes (for glasses wired the other way round)
+uniform float uDepthTexel; // one depth-map texel across
 in vec2 vTexCoords;
 out vec4 outColor;
 
@@ -32,7 +33,11 @@ void main() {
     float dir = srcRight ? -1.0 : 1.0;
     float x = uv.x;
     for (int i = 0; i < 5; i++) {
-        float d = texture(uDepth, vec2(x, uv.y)).r;
+        // Nearest of three neighbours: keeps the outline of near objects intact, so the small
+        // gaps open in the background (filled by stretching it) instead of tearing the subject.
+        float d = max(texture(uDepth, vec2(x, uv.y)).r,
+                  max(texture(uDepth, vec2(x - 2.0 * uDepthTexel, uv.y)).r,
+                      texture(uDepth, vec2(x + 2.0 * uDepthTexel, uv.y)).r));
         x = uv.x - dir * uStrength * (d - uConv);
     }
     outColor = texture(uSrc, vec2(clamp(x, 0.0, 1.0), uv.y));

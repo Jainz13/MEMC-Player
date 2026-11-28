@@ -18,7 +18,7 @@ class StereoControl(val mode: Int) {
         val labels = listOf(OFF to "Off", CONVERT to "2D → 3D", SBS to "3D video (SBS)", HALF_SBS to "3D video (half SBS)")
 
         /** Largest shift between the eyes at 100% depth, as a share of the picture width. */
-        const val MAX_SHIFT = 0.035f
+        const val MAX_SHIFT = 0.02f
 
         /** Guesses the 3D layout from a file name ("Avatar.2009.Half-SBS.mkv"). */
         fun fromFileName(name: String): Int {

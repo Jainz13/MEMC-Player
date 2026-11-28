@@ -75,6 +75,8 @@ class Settings(context: Context) {
     /** 2D-to-3D depth, 0..100. */
     val stereoStrength = int("stereo_strength", 50)
     val stereoSwap = bool("stereo_swap", false)
+    /** Auto HDR while 3D plays (some glasses show HDR washed out in their 3D mode). */
+    val stereoAutoHdr = bool("stereo_auto_hdr", true)
     /** Switch the display to the video's frame rate when it can do so without a black flash. */
     val matchFrameRate = bool("match_frame_rate", true)
 

@@ -160,6 +160,7 @@ private class StereoShaderProgram(
             sbsProgram.setFloatUniform("uStrength", StereoControl.MAX_SHIFT * 2f * control.strength.coerceIn(0f, 1f))
             sbsProgram.setFloatUniform("uConv", control.convergence.coerceIn(0f, 1f))
             sbsProgram.setIntUniform("uSwap", if (control.swapEyes) 1 else 0)
+            sbsProgram.setFloatUniform("uDepthTexel", if (convert && depthW > 0) 1f / depthW else 0f)
             sbsProgram.bindAttributesAndUniforms()
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             GlUtil.checkGlError()

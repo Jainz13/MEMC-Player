@@ -103,7 +103,7 @@ class PlayerActivity : ComponentActivity() {
         picture = PictureControl(
             // Without the effect pipeline nothing may be flagged as HDR, or SDR colours would be wrong.
             boost = if (memcAllowed) g.settings.hdrBoost.value / 100f else 0f,
-            autoHdr = (threeDOn || g.settings.autoHdr.value && memcAllowed) && hdrMode != HdrMode.SDR &&
+            autoHdr = (if (threeDOn) g.settings.stereoAutoHdr.value else g.settings.autoHdr.value && memcAllowed) && hdrMode != HdrMode.SDR &&
                 !intent.getBooleanExtra(EXTRA_NO_AUTO_HDR, false),
         )
         player = PlayerFactory.create(this, g.smb, g.settings, picture, hdrMode)
@@ -129,6 +129,11 @@ class PlayerActivity : ComponentActivity() {
             onSwap = { g.settings.stereoSwap.set(it) },
             onScreenOff = { setScreenOff(it) },
             onDownloadModel = { downloadDepthModel() },
+            autoHdr = g.settings.stereoAutoHdr.value,
+            onAutoHdr = {
+                g.settings.stereoAutoHdr.set(it)
+                restartAtPosition()
+            },
         ).apply {
             canUseAi = !BuildConfig.TV && NpuFlow.isSnapdragon
             modelState = if (!canUseAi || DepthModel.ready(this@PlayerActivity)) "" else "missing"
@@ -136,6 +141,14 @@ class PlayerActivity : ComponentActivity() {
         // Frames are processed no larger than the screen: a 4K film on this panel is shown at
         // the panel's resolution anyway, and it cuts the GPU work by more than half.
         memc.maxLongSide = screenLongSide()
+        stereo?.let { s ->
+            // 3D: fixed size, never eased. Each eye is at most 1920 wide, so a normal video only
+            // needs 1920; a full side-by-side file keeps its whole width. (The load governor used
+            // to shrink the picture to 1280x720 after a few dropped frames.)
+            memc.adaptive = false
+            memc.quality = 2
+            memc.maxLongSide = if (s.mode == StereoControl.SBS) 3840 else 1920
+        }
         watchHeat()
         startDebugRecording()
         startNpuIfWanted()
@@ -144,8 +157,24 @@ class PlayerActivity : ComponentActivity() {
         if (stereo != null) {
             installStereo()
             startDepthIfWanted()
+            // The AI depth model makes far better 3D than picture cues: fetch it on Wi-Fi.
+            if (stereo?.mode == StereoControl.CONVERT && threeD.modelState == "missing" &&
+                getSystemService(android.net.ConnectivityManager::class.java)?.isActiveNetworkMetered == false
+            ) {
+                Toast.makeText(this, "Downloading AI 3D (about 100 MB, once) - picture-cue 3D until it's ready", Toast.LENGTH_LONG).show()
+                downloadDepthModel()
+            }
             if (!BuildConfig.TV) {
-                glasses = GlassesOutput(this, onSurface = { moveVideoTo(it) }, onInfo = { threeD.glassesInfo = it }).also { it.start() }
+                glasses = GlassesOutput(this, onSurface = { moveVideoTo(it) }, onInfo = { threeD.glassesInfo = it }).also {
+                    it.subtitleScale = g.settings.subtitleScale.value / 100f
+                    it.start()
+                }
+                // Subtitles go to the glasses too (the phone's subtitle layer isn't shown there).
+                player.addListener(object : Player.Listener {
+                    override fun onCues(cueGroup: androidx.media3.common.text.CueGroup) {
+                        glasses?.setCues(cueGroup.cues)
+                    }
+                })
             }
         } else if (memcAllowed && (memc.enabled || picture.boost > 0f || picture.autoHdr)) installMemc()
         applyBoostBacklight()
@@ -155,7 +184,7 @@ class PlayerActivity : ComponentActivity() {
             override fun onDroppedVideoFrames(eventTime: AnalyticsListener.EventTime, droppedFrames: Int, elapsedMs: Long) {
                 com.jainz.memc.memc.PerfStats.dropped.addAndGet(droppedFrames.toLong())
                 DebugRecorder.event("player", "Dropped $droppedFrames frames in $elapsedMs ms")
-                if (memcInstalled && droppedFrames * 1000L / elapsedMs.coerceAtLeast(1) >= 4) {
+                if (memcInstalled && stereo == null && droppedFrames * 1000L / elapsedMs.coerceAtLeast(1) >= 4) {
                     // First let the engine catch its breath and refill its buffer; only if it
                     // stutters again soon after is the workload eased.
                     if (!prebuffer(minGapMs = 20_000)) memc.requestEase()

@@ -56,6 +56,8 @@ class ThreeDUi(
     val onSwap: (Boolean) -> Unit,
     val onScreenOff: (Boolean) -> Unit,
     val onDownloadModel: () -> Unit,
+    val autoHdr: Boolean = true,
+    val onAutoHdr: (Boolean) -> Unit = {},
 ) {
     /** The video is on an external display (glasses); the phone shows the black touch pad. */
     var glassesActive by mutableStateOf(false)
@@ -83,7 +85,7 @@ fun ThreeDSection(ui: ThreeDUi) {
         }
         Text(
             if (ui.mode == StereoControl.OFF) {
-                "Side-by-side 3D for AR glasses (RayNeo, XREAL, VITURE). Smooth motion is switched off in 3D and Auto HDR on. Switching restarts the video."
+                "Side-by-side 3D for AR glasses (RayNeo, XREAL, VITURE). Pick 2D → 3D for normal videos; the SBS options are only for files that are already 3D (\"SBS\" / \"Half-SBS\" in the name). Smooth motion is off in 3D. Switching restarts the video."
             } else {
                 "Smooth motion is off and Auto HDR is on while 3D plays." +
                     if (!BuildConfig.TV) " With glasses connected the video goes to them and this screen becomes a black touch pad." else ""
@@ -124,6 +126,17 @@ fun ThreeDSection(ui: ThreeDUi) {
         }
         if (stereo != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Auto HDR in 3D", color = Color.White)
+                    Text(
+                        "Brighter, HDR picture on the glasses. Turn off if it looks washed out or dim in their 3D mode (restarts the video).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Palette.TextFaint,
+                    )
+                }
+                Switch(checked = ui.autoHdr, onCheckedChange = { ui.onAutoHdr(it) })
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Swap left and right eye", color = Color.White, modifier = Modifier.weight(1f))
                 var swap by remember { mutableStateOf(stereo.swapEyes) }
                 Switch(checked = swap, onCheckedChange = { swap = it; stereo.swapEyes = it; ui.onSwap(it) })
@@ -150,6 +163,14 @@ fun ThreeDSection(ui: ThreeDUi) {
  * Double-tap: play / pause. Swipe left or right: seek. Swipe up or down on the right: volume;
  * on the left: 3D depth (in 2D-to-3D). Press and hold: wake the screen.
  */
+/** Swipe distance to a seek: nothing for the first 8% of the width, then 90 s per full width. */
+private fun seekMs(dx: Float, width: Int): Long {
+    val dead = width * 0.08f
+    val past = (abs(dx) - dead).coerceAtLeast(0f)
+    val ms = (past / width * 90_000).toLong() / 5000 * 5000
+    return if (dx < 0) -ms else ms
+}
+
 @Composable
 fun TouchPad(ui: ThreeDUi, player: Player, audio: AudioManager, onWake: () -> Unit) {
     var hint by remember { mutableStateOf<String?>("Double-tap: play/pause · swipe ←→: seek · swipe ↕ right: volume" +
@@ -194,17 +215,21 @@ fun TouchPad(ui: ThreeDUi, player: Player, audio: AudioManager, onWake: () -> Un
                         startDepth = ui.stereo?.strength ?: 0f
                     },
                     onDragEnd = {
-                        if (axis == 1) player.seekTo((startPos + (dx / size.width * 180_000).toLong()).coerceAtLeast(0))
+                        val ms = seekMs(dx, size.width)
+                        if (axis == 1 && ms != 0L) player.seekTo((startPos + ms).coerceIn(0, player.duration.coerceAtLeast(0)))
                     },
                 ) { change, amount ->
                     change.consume()
                     dx += amount.x
                     dy += amount.y
-                    if (axis == 0 && (abs(dx) > 24 || abs(dy) > 24)) axis = if (abs(dx) > abs(dy)) 1 else 2
+                    // A deliberate swipe only: small slips while holding the phone did seek before.
+                    val slop = size.width * 0.06f
+                    if (axis == 0 && (abs(dx) > slop || abs(dy) > slop)) axis = if (abs(dx) > abs(dy) * 1.5f) 1 else if (abs(dy) > abs(dx) * 1.5f) 2 else 0
                     when (axis) {
                         1 -> {
-                            val delta = (dx / size.width * 180).toInt()
-                            say((if (delta >= 0) "+" else "") + "$delta s")
+                            val ms = seekMs(dx, size.width)
+                            val target = (startPos + ms).coerceAtLeast(0)
+                            say(com.jainz.memc.ui.Format.clock(target) + "  (" + (if (ms >= 0) "+" else "−") + "${abs(ms) / 1000} s)")
                         }
                         2 -> {
                             val frac = -dy / size.height
